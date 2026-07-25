@@ -1,0 +1,29 @@
+# Worst offender: reserves half a core and 512Mi per replica, does nothing at all.
+# Two replicas so the report has to aggregate waste across pods, not just read one.
+# Expected: CPU efficiency ~0%, memory efficiency ~1%. Should rank #1 by waste.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: idle-hog
+  namespace: cost-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: idle-hog
+  template:
+    metadata:
+      labels:
+        app: idle-hog
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command: ["sh", "-c", "sleep infinity"]
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

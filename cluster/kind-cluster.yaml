@@ -1,0 +1,18 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: kubecost-lab
+# Two workers rather than one so pod->node allocation is a real mapping and not
+# a constant. The instance-type label is deliberately in a private namespace
+# (not node.kubernetes.io/instance-type) because these are fabricated values
+# feeding a static pricing table, not real cloud metadata.
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.36.1
+  - role: worker
+    image: kindest/node:v1.36.1
+    labels:
+      cost.local/instance-type: m5.large
+  - role: worker
+    image: kindest/node:v1.36.1
+    labels:
+      cost.local/instance-type: m5.large

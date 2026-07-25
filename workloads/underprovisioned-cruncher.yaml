@@ -1,0 +1,46 @@
+# Mixed case, and the reason efficiency is computed per-dimension:
+#   CPU  - burns flat out, throttled by its own 200m limit, against a 50m
+#          request. Efficiency ~400%, i.e. UNDER-provisioned. Recommending a
+#          cut here would be actively harmful.
+#   Memory - holds 16Mi against a 64Mi request. Efficiency ~25% -> over-provisioned.
+# A correct report flags this on memory only and never on CPU.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: underprovisioned-cruncher
+  namespace: cost-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: underprovisioned-cruncher
+  template:
+    metadata:
+      labels:
+        app: underprovisioned-cruncher
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              dd if=/dev/zero of=/ballast/block bs=1M count=16
+              while true; do :; done
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              # Hard cap so a busy loop cannot eat the host laptop.
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: ballast
+              mountPath: /ballast
+      volumes:
+        - name: ballast
+          emptyDir:
+            medium: Memory
+            sizeLimit: 100Mi

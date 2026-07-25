@@ -1,0 +1,37 @@
+# Values for prometheus-community/kube-prometheus-stack in a local kind cluster.
+# Goal: the smallest install that still exposes cadvisor + kube-state-metrics,
+# which are the only two sources the cost pipeline reads.
+
+# Not used by this project: the report is a derived table, rendered by our own
+# CLI. Flip to true if you want Grafana's Explore view for learning PromQL.
+grafana:
+  enabled: false
+
+# No alerting in scope.
+alertmanager:
+  enabled: false
+
+# In kind these control-plane components bind to 127.0.0.1, so their
+# ServiceMonitors would sit permanently "down" and add noise. None of them
+# produce data the cost pipeline needs.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeEtcd:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    # Storage is emptyDir (chart default). The cluster is disposable; history
+    # dies with it. Retention only needs to outlast the analysis window.
+    retention: 7d
+    scrapeInterval: 30s
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        memory: 1Gi

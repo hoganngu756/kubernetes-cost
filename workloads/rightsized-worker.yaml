@@ -1,0 +1,46 @@
+# Control case: same ~100m duty cycle as overprovisioned-web, but requested
+# honestly. Expected: CPU efficiency ~77%, memory ~75% -> must NOT be flagged.
+# If this one shows up in the report, the threshold or the math is wrong.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rightsized-worker
+  namespace: cost-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rightsized-worker
+  template:
+    metadata:
+      labels:
+        app: rightsized-worker
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              dd if=/dev/zero of=/ballast/block bs=1M count=48
+              while true; do
+                end=$(($(date +%s) + 1))
+                while [ $(date +%s) -lt $end ]; do :; done
+                sleep 9
+              done
+          resources:
+            requests:
+              cpu: 130m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 128Mi
+          volumeMounts:
+            - name: ballast
+              mountPath: /ballast
+      volumes:
+        - name: ballast
+          emptyDir:
+            medium: Memory
+            sizeLimit: 100Mi

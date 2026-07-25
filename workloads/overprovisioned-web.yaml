@@ -1,0 +1,48 @@
+# Realistic case: a service sized for peak that mostly idles.
+# Burns ~1s of CPU per 10s cycle (~100m) against a 500m request, and holds 32Mi
+# of a 256Mi request. Expected: CPU efficiency ~20%, memory ~13% -> flagged.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: overprovisioned-web
+  namespace: cost-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: overprovisioned-web
+  template:
+    metadata:
+      labels:
+        app: overprovisioned-web
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              dd if=/dev/zero of=/ballast/block bs=1M count=32
+              while true; do
+                end=$(($(date +%s) + 1))
+                while [ $(date +%s) -lt $end ]; do :; done
+                sleep 9
+              done
+          resources:
+            requests:
+              cpu: 500m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: ballast
+              mountPath: /ballast
+      volumes:
+        # tmpfs, so the bytes written count against the container's memory cgroup
+        # and therefore show up in container_memory_working_set_bytes.
+        - name: ballast
+          emptyDir:
+            medium: Memory
+            sizeLimit: 200Mi
