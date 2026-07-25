@@ -1,6 +1,12 @@
-# Control case: same ~100m duty cycle as overprovisioned-web, but requested
-# honestly. Expected: CPU efficiency ~77%, memory ~75% -> must NOT be flagged.
-# If this one shows up in the report, the threshold or the math is wrong.
+# Control case: requested honestly. Expected: CPU efficiency ~77%, memory ~75%
+# -> must NOT be flagged. If this one shows up in the report, the threshold or
+# the math is wrong.
+#
+# Duty cycle: the busy phase is throttled by the 300m CPU limit (a single-
+# threaded loop wants a full core, cgroup CFS quota caps it), so average usage
+# is limit * (busy_seconds / cycle_seconds), not simply "however long the busy
+# phase runs". 3s busy / 9s cycle -> 300m * 3/9 = 100m average, independently
+# verified against the live cluster.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,9 +31,9 @@ spec:
             - |
               dd if=/dev/zero of=/ballast/block bs=1M count=48
               while true; do
-                end=$(($(date +%s) + 1))
+                end=$(($(date +%s) + 3))
                 while [ $(date +%s) -lt $end ]; do :; done
-                sleep 9
+                sleep 6
               done
           resources:
             requests:

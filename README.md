@@ -12,7 +12,7 @@ OpenCost and Kubecost already solve those and reimplementing them teaches nothin
 ## Status
 
 - [x] **Milestone 1** — cluster, monitoring stack, sample workloads, metrics verified
-- [ ] **Milestone 2** — PromQL queries + Python metrics puller
+- [x] **Milestone 2** — PromQL queries + Python metrics puller (`costmon/metrics.py`)
 - [ ] **Milestone 3** — pricing table, efficiency ratios, waste calculation
 - [ ] **Milestone 4** — CLI efficiency report (first full demo)
 
@@ -51,16 +51,28 @@ Makefile                        setup/teardown targets, pinned chart version
 Deployed to the `cost-demo` namespace, each engineered to produce a known answer
 so the report can be checked against expectations rather than eyeballed:
 
-| Workload | CPU req | Mem req | Actual | Expected verdict |
+| Workload | CPU req | Mem req | Actual (verified) | Verdict |
 |---|---|---|---|---|
-| `idle-hog` (×2 replicas) | 500m | 512Mi | ~0 CPU, ~0.3Mi | Worst offender on both axes |
-| `overprovisioned-web` | 500m | 256Mi | ~100m, ~33Mi | Flagged on both axes |
-| `rightsized-worker` | 130m | 64Mi | ~100m, ~49Mi | **Not** flagged — the control case |
-| `underprovisioned-cruncher` | 50m | 64Mi | ~200m (throttled), ~16Mi | Flagged on **memory only**; CPU is under-provisioned |
+| `idle-hog` (×2 replicas) | 1000m (2×500m) | 1024Mi (2×512Mi) | 0m, 0.6Mi | Worst offender on both axes (0% efficiency) |
+| `overprovisioned-web` | 500m | 256Mi | 156m, 33.1Mi | Flagged on both axes (31% CPU, 13% mem) |
+| `rightsized-worker` | 130m | 64Mi | 101m, 48.6Mi | **Not** flagged — control case (78% CPU, 76% mem) |
+| `underprovisioned-cruncher` | 50m | 64Mi | 200m (throttled at limit), 16.4Mi | Flagged on **memory only** (26%); CPU is under-provisioned (400%) |
+
+Verified end-to-end via `python3 -m costmon.metrics` against the live cluster, requests
+aggregated correctly across `idle-hog`'s 2 replicas.
 
 `idle-hog` runs two replicas so the report has to aggregate across pods.
 `underprovisioned-cruncher` exists to prove efficiency is computed per-dimension —
 recommending a CPU cut there would be actively harmful.
+
+**Gotcha found while verifying against the live cluster:** the busy-loop workloads
+run their "busy" phase for a fixed wall-clock duration, but a CPU *limit* below a
+full core throttles how much they actually burn during that window via CFS quota.
+Real average usage is `limit × (busy_seconds / cycle_seconds)`, not just "however
+long the loop runs" — the first cut of `rightsized-worker` used a duty cycle sized
+for the latter and landed at ~30m instead of ~100m, which would have wrongly
+flagged the control case. Fixed by solving the duty cycle against the limit
+instead of against wall-clock time (see comments in the workload YAML).
 
 ## Pinned versions
 
@@ -109,6 +121,27 @@ sum by (deployment) (
 
 The `label_replace` calls exist because `on(...)` needs matching label *names* on
 both sides, and both metrics call their target `owner_name`.
+
+## Metrics puller (`costmon/`)
+
+```sh
+python3 -m costmon.metrics   # prints requests vs. actual usage per workload
+```
+
+Stdlib only, no dependencies. `costmon/prometheus.py` is a ~10-line instant-query
+wrapper; `costmon/metrics.py` does the pod → Deployment join **in Python**, not as
+nested PromQL:
+
+- One query maps pod → ReplicaSet (`kube_pod_owner`), one maps ReplicaSet →
+  Deployment (`kube_replicaset_owner`); Python composes the two dicts.
+- Requests and usage are pulled as flat per-pod instant queries, then summed
+  into per-Deployment totals using that pod → Deployment map.
+
+The PromQL version in this README does the same join in a single nested query
+and is kept here as validation, but the join logic lives in Python going
+forward — it's one join, unit-testable, and it's the natural place for
+Milestone 3's cost math to plug into (`pull_workload_metrics()` returns a plain
+`WorkloadMetrics` list, decoupled from any query or output concern).
 
 ## Caveat: the p95 window
 

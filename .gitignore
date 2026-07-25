@@ -5,6 +5,7 @@ venv/
 
 # Claude Code local settings (machine-specific permissions, not shared config)
 .claude/settings.local.json
+.claude
 
 # OS cruft
 .DS_Store

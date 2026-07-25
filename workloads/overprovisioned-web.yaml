@@ -1,6 +1,9 @@
-# Realistic case: a service sized for peak that mostly idles.
-# Burns ~1s of CPU per 10s cycle (~100m) against a 500m request, and holds 32Mi
-# of a 256Mi request. Expected: CPU efficiency ~20%, memory ~13% -> flagged.
+# Realistic case: a service sized for peak that mostly idles, and holds 32Mi
+# of a 256Mi request. Expected: CPU efficiency ~33%, memory ~13% -> flagged.
+#
+# Duty cycle: same throttled-burst math as rightsized-worker.yaml. 3s busy /
+# 9s cycle against a 500m limit -> 500m * 3/9 = 167m average -> 167/500 = 33%,
+# comfortably under the 40% flag threshold.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,9 +28,9 @@ spec:
             - |
               dd if=/dev/zero of=/ballast/block bs=1M count=32
               while true; do
-                end=$(($(date +%s) + 1))
+                end=$(($(date +%s) + 3))
                 while [ $(date +%s) -lt $end ]; do :; done
-                sleep 9
+                sleep 6
               done
           resources:
             requests:
