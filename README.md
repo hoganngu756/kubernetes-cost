@@ -13,7 +13,7 @@ OpenCost and Kubecost already solve those and reimplementing them teaches nothin
 
 - [x] **Milestone 1** — cluster, monitoring stack, sample workloads, metrics verified
 - [x] **Milestone 2** — PromQL queries + Python metrics puller (`costmon/metrics.py`)
-- [ ] **Milestone 3** — pricing table, efficiency ratios, waste calculation
+- [x] **Milestone 3** — pricing table, efficiency ratios, waste calculation (`costmon/pricing.py`, `costmon/cost.py`)
 - [ ] **Milestone 4** — CLI efficiency report (first full demo)
 
 ## Prerequisites
@@ -142,6 +142,38 @@ and is kept here as validation, but the join logic lives in Python going
 forward — it's one join, unit-testable, and it's the natural place for
 Milestone 3's cost math to plug into (`pull_workload_metrics()` returns a plain
 `WorkloadMetrics` list, decoupled from any query or output concern).
+
+## Cost calculation (`costmon/pricing.py`, `costmon/cost.py`)
+
+```sh
+python3 -m costmon.cost               # ranked waste report against the live cluster
+python3 -m unittest discover -v       # hand-calculated math checks, no cluster needed
+```
+
+`costmon/pricing.py` is a static, blended AWS-style rate ($/vCPU-hr, $/GiB-hr
+derived from m5.xlarge on-demand pricing) -- see the module docstring for why a
+flat rate, not per-instance-type pricing, is the right amount of precision here.
+
+`costmon/cost.py` takes `WorkloadMetrics` and, independently per CPU and memory:
+computes `efficiency = usage / request`, flags "overprovisioned" below 40%
+efficiency, and recommends `usage * 1.3` as the new request when flagged (left
+untouched otherwise -- an under-provisioned workload never gets a recommended
+cut). Waste $ is priced only on the flagged axis.
+
+The unit tests in `tests/test_cost.py` check the $ math against hand-calculated
+values and cover what the live cluster can't: a workload under-provisioned on
+CPU while over-provisioned on memory at the same time, and the zero-request
+edge case. This is also why efficiency is computed per-dimension rather than as
+one blended score -- a single combined ratio would hide exactly that case.
+
+Verified live cluster output (waste-ranked):
+
+| Workload | CPU eff | Mem eff | $/mo cost | $/mo waste |
+|---|---|---|---|---|
+| `idle-hog` | 0% | 1% | 43.80 | 43.74 |
+| `overprovisioned-web` | 32% | 13% | 19.71 | 12.07 |
+| `underprovisioned-cruncher` | 398% | 26% | 2.30 | 0.36 |
+| `rightsized-worker` | 77% | 76% | 5.10 | 0.00 |
 
 ## Caveat: the p95 window
 
