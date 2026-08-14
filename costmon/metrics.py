@@ -12,6 +12,19 @@ from dataclasses import dataclass
 
 from costmon.prometheus import instant_query
 
+# Inner window for rate(). Prometheus needs several samples to compute a rate
+# accurately; at the 30s scrapeInterval this project pins, 2m gives 4.
+CPU_RATE_WINDOW = "2m"
+
+# Step between samples of the outer (percentile) window. One point per minute,
+# so a 15m window yields 15 points to take a percentile over.
+USAGE_STEP = "1m"
+
+# CPU requests are sized off a high percentile rather than the max: CPU is
+# compressible, so a brief spike costs latency, not an OOMKill, and sizing
+# every workload for its worst second wastes most of the cluster.
+CPU_QUANTILE = 0.95
+
 
 @dataclass
 class WorkloadMetrics:
@@ -59,13 +72,21 @@ def _sum_by_deployment(rows: list[dict], pod_to_deployment: dict[str, str]) -> d
 
 
 def pull_workload_metrics(
-    base_url: str, namespace: str, usage_window: str = "5m"
+    base_url: str, namespace: str, usage_window: str = "15m"
 ) -> list[WorkloadMetrics]:
-    """Snapshot of requests vs. actual usage, aggregated per Deployment.
+    """Requests vs. actual usage over `usage_window`, aggregated per Deployment.
 
-    `usage_window` is the rate() window for CPU -- short-lived demo clusters
-    should use a short window (see README caveat on p95 not being meaningful
-    without organic usage cycles).
+    Usage is a *peak-aware* statistic, not an average, because the numbers
+    feed request recommendations: p95 of the CPU rate, and max working set
+    for memory. An average would recommend a request that the workload
+    exceeds half the time -- throttling on CPU, OOMKill on memory.
+
+    Both statistics are computed per container and then summed, matching how
+    requests are summed: a request is set per container, so that's the unit a
+    recommendation applies to.
+
+    See the README caveat on why a percentile is near-meaningless on this
+    particular cluster (synthetic, flat load) while still being the right math.
     """
     pod_to_deployment = _pod_to_deployment(base_url, namespace)
 
@@ -86,16 +107,18 @@ def pull_workload_metrics(
     cpu_usage = _sum_by_deployment(
         instant_query(
             base_url,
-            f'sum by (pod) (rate(container_cpu_usage_seconds_total'
-            f'{{namespace="{namespace}", container!=""}}[{usage_window}]))',
+            f'sum by (pod) (quantile_over_time({CPU_QUANTILE}, '
+            f'rate(container_cpu_usage_seconds_total'
+            f'{{namespace="{namespace}", container!=""}}[{CPU_RATE_WINDOW}])'
+            f'[{usage_window}:{USAGE_STEP}]))',
         ),
         pod_to_deployment,
     )
     mem_usage = _sum_by_deployment(
         instant_query(
             base_url,
-            f'sum by (pod) (container_memory_working_set_bytes'
-            f'{{namespace="{namespace}", container!=""}})',
+            f'sum by (pod) (max_over_time(container_memory_working_set_bytes'
+            f'{{namespace="{namespace}", container!=""}}[{usage_window}]))',
         ),
         pod_to_deployment,
     )
@@ -112,13 +135,3 @@ def pull_workload_metrics(
         )
         for d in deployments
     ]
-
-
-if __name__ == "__main__":
-    rows = pull_workload_metrics("http://localhost:9090", "cost-demo")
-    print(f"{'workload':<26}{'cpu req':>10}{'cpu used':>10}{'mem req (Mi)':>15}{'mem used (Mi)':>15}")
-    for r in rows:
-        print(
-            f"{r.workload:<26}{r.cpu_request_cores:>10.3f}{r.cpu_usage_cores:>10.3f}"
-            f"{r.mem_request_bytes / 2**20:>15.1f}{r.mem_usage_bytes / 2**20:>15.1f}"
-        )

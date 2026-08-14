@@ -81,6 +81,20 @@ class EvaluateTests(unittest.TestCase):
         # hand-calculated: mem_waste only = (64-20.8)/1024 * 0.012 * 730
         self.assertAlmostEqual(c.monthly_waste_usd, 0.3695625, places=4)
 
+    def test_threshold_override_changes_what_is_flagged(self):
+        # 50% efficient: flagged at the CLI's --threshold 0.6, not at the 0.4 default.
+        m = WorkloadMetrics(
+            namespace="cost-demo",
+            workload="borderline",
+            cpu_request_cores=0.2,
+            cpu_usage_cores=0.1,
+            mem_request_bytes=64 * MIB,
+            mem_usage_bytes=32 * MIB,
+        )
+        self.assertFalse(evaluate(m).cpu_overprovisioned)
+        self.assertTrue(evaluate(m, threshold=0.6).cpu_overprovisioned)
+        self.assertTrue(evaluate(m, threshold=0.6).mem_overprovisioned)
+
     def test_zero_request_does_not_crash_and_is_not_flagged(self):
         m = WorkloadMetrics(
             namespace="cost-demo",

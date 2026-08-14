@@ -14,7 +14,7 @@ OpenCost and Kubecost already solve those and reimplementing them teaches nothin
 - [x] **Milestone 1** — cluster, monitoring stack, sample workloads, metrics verified
 - [x] **Milestone 2** — PromQL queries + Python metrics puller (`costmon/metrics.py`)
 - [x] **Milestone 3** — pricing table, efficiency ratios, waste calculation (`costmon/pricing.py`, `costmon/cost.py`)
-- [ ] **Milestone 4** — CLI efficiency report (first full demo)
+- [x] **Milestone 4** — peak-aware usage statistics + CLI efficiency report (`costmon/cli.py`)
 
 ## Prerequisites
 
@@ -44,6 +44,12 @@ cluster/kind-cluster.yaml       3-node kind cluster, node image pinned
 cluster/prometheus-values.yaml  minimal kube-prometheus-stack values
 workloads/                      sample apps with deliberate misprovisioning
 Makefile                        setup/teardown targets, pinned chart version
+costmon/prometheus.py           Prometheus HTTP API wrapper (stdlib only)
+costmon/metrics.py              pod -> Deployment join, requests vs. usage
+costmon/pricing.py              static blended $/vCPU-hr and $/GiB-hr
+costmon/cost.py                 efficiency, recommendations, waste $
+costmon/cli.py                  the report -- entry point
+tests/                          math and rendering checks, no cluster needed
 ```
 
 ## Sample workloads
@@ -58,7 +64,7 @@ so the report can be checked against expectations rather than eyeballed:
 | `rightsized-worker` | 130m | 64Mi | 101m, 48.6Mi | **Not** flagged — control case (78% CPU, 76% mem) |
 | `underprovisioned-cruncher` | 50m | 64Mi | 200m (throttled at limit), 16.4Mi | Flagged on **memory only** (26%); CPU is under-provisioned (400%) |
 
-Verified end-to-end via `python3 -m costmon.metrics` against the live cluster, requests
+Verified end-to-end against the live cluster in Milestone 2, with requests
 aggregated correctly across `idle-hog`'s 2 replicas.
 
 `idle-hog` runs two replicas so the report has to aggregate across pods.
@@ -89,7 +95,7 @@ Three sources, all provided by the Helm chart:
 |---|---|---|
 | `kube_pod_container_resource_requests` | kube-state-metrics | What the workload reserved (and therefore is billed for) |
 | `container_cpu_usage_seconds_total` | cadvisor | Actual CPU — a counter, needs `rate()` |
-| `container_memory_working_set_bytes` | cadvisor | Actual memory — already a gauge |
+| `container_memory_working_set_bytes` | cadvisor | Actual memory — already a gauge, but read as `max_over_time` (see below) |
 
 Requests, not limits, drive the cost model: the scheduler bin-packs nodes on
 requests, so requests are what is effectively reserved. Limits are context for
@@ -122,11 +128,7 @@ sum by (deployment) (
 The `label_replace` calls exist because `on(...)` needs matching label *names* on
 both sides, and both metrics call their target `owner_name`.
 
-## Metrics puller (`costmon/`)
-
-```sh
-python3 -m costmon.metrics   # prints requests vs. actual usage per workload
-```
+## Metrics puller (`costmon/metrics.py`)
 
 Stdlib only, no dependencies. `costmon/prometheus.py` is a ~10-line instant-query
 wrapper; `costmon/metrics.py` does the pod → Deployment join **in Python**, not as
@@ -145,11 +147,6 @@ Milestone 3's cost math to plug into (`pull_workload_metrics()` returns a plain
 
 ## Cost calculation (`costmon/pricing.py`, `costmon/cost.py`)
 
-```sh
-python3 -m costmon.cost               # ranked waste report against the live cluster
-python3 -m unittest discover -v       # hand-calculated math checks, no cluster needed
-```
-
 `costmon/pricing.py` is a static, blended AWS-style rate ($/vCPU-hr, $/GiB-hr
 derived from m5.xlarge on-demand pricing) -- see the module docstring for why a
 flat rate, not per-instance-type pricing, is the right amount of precision here.
@@ -166,7 +163,8 @@ CPU while over-provisioned on memory at the same time, and the zero-request
 edge case. This is also why efficiency is computed per-dimension rather than as
 one blended score -- a single combined ratio would hide exactly that case.
 
-Verified live cluster output (waste-ranked):
+Live cluster output from Milestone 3 (waste-ranked), measured with the older
+average-CPU / instant-memory statistic:
 
 | Workload | CPU eff | Mem eff | $/mo cost | $/mo waste |
 |---|---|---|---|---|
@@ -175,11 +173,66 @@ Verified live cluster output (waste-ranked):
 | `underprovisioned-cruncher` | 398% | 26% | 2.30 | 0.36 |
 | `rightsized-worker` | 77% | 76% | 5.10 | 0.00 |
 
-## Caveat: the p95 window
+Milestone 4 changed the usage statistic (see below). Because every workload here
+emits flat load by construction, p95 and max should land within a percent or two
+of these figures — but that has **not** been re-measured against a live cluster yet.
 
-A disposable kind cluster with synthetic load has no organic usage cycles, so a
-p95 over 7 days is meaningless here — the workloads emit flat, near-constant load
-by construction. Numbers from this setup are illustrative of the *math*, not of
-real production behaviour. The analysis window is therefore short and configurable;
-`rate()` needs several minutes of history before it reads accurately at all.
-# kubernetes-cost
+## CLI (`costmon/cli.py`)
+
+```sh
+make port-forward                     # in another shell; the CLI reads Prometheus over it
+python3 -m costmon.cli                # waste-ranked report + recommended request changes
+python3 -m costmon.cli --help         # --namespace, --window, --threshold, --prometheus-url
+python3 -m unittest discover -v       # hand-calculated math checks, no cluster needed
+```
+
+```
+workload                    cpu eff  mem eff   $/mo cost  $/mo waste
+idle-hog                         0%       0%       43.80       43.79
+overprovisioned-web             31%      13%       19.71       12.24
+underprovisioned-cruncher      400%      26%        2.30        0.37
+rightsized-worker               78%      76%        5.10        0.00
+TOTAL                                              70.91       56.39
+
+Recommended request changes (efficiency < 40%, 1.3x headroom):
+  idle-hog                  cpu 1000m -> 0m           mem 1024Mi -> 1Mi
+  overprovisioned-web       cpu 500m -> 203m          mem 256Mi -> 43Mi
+  underprovisioned-cruncher cpu ok                    mem 64Mi -> 21Mi
+```
+
+(Rendered from the expected workload figures, not a live run — cluster was down.)
+
+The recommendations block is the actionable half: `evaluate()` was already
+computing recommended requests in Milestone 3, but nothing printed them. Only
+the flagged axis gets a recommendation — `cpu ok` on `underprovisioned-cruncher`
+is the per-dimension logic showing its work.
+
+**Known rough edge:** a workload using nothing at all renders as `cpu 1000m -> 0m`,
+which is not a request anyone can apply. The math is right (usage really is zero);
+the useful advice there is "delete this workload", and no minimum-request floor
+has been decided on yet.
+
+## The usage statistic: p95 CPU, max memory
+
+Requests are sized off a peak-aware statistic, not an average, because these
+numbers feed recommendations that get applied:
+
+| Dimension | Statistic | Why |
+|---|---|---|
+| CPU | `quantile_over_time(0.95, rate(...)[2m])` | CPU is compressible — exceeding the request costs latency, not a kill. Sizing on max would reserve every workload's worst second. |
+| Memory | `max_over_time(...)` | Memory is not compressible. Exceeding the request risks eviction/OOMKill, so the peak is the only safe basis. |
+
+Both are computed **per container** and then summed, matching how requests are
+summed — a request is set per container, so that's the unit a recommendation
+applies to.
+
+The inner `rate()` window is 2m: at the pinned 30s `scrapeInterval` that gives
+four samples, and `rate()` needs several before it reads accurately at all. The
+outer window (`--window`, default 15m) is sampled at a 1m step, so the default
+takes a percentile over ~15 points.
+
+**Caveat this doesn't fix:** a disposable kind cluster with synthetic load has no
+organic usage cycles — the workloads emit flat, near-constant load by construction,
+so p95 ≈ mean ≈ max here and the percentile does nothing visible. Numbers from this
+setup are illustrative of the *math*, not of real production behaviour. The
+statistic is correct; this cluster just can't demonstrate why it matters.

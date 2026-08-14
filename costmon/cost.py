@@ -26,6 +26,10 @@ RECOMMENDATION_HEADROOM = 1.3
 @dataclass
 class WorkloadCost:
     workload: str
+    # Carried through from WorkloadMetrics so a recommendation can be rendered
+    # as "current -> recommended" without re-joining against the input.
+    cpu_request_cores: float
+    mem_request_bytes: float
     cpu_efficiency: float | None
     mem_efficiency: float | None
     cpu_overprovisioned: bool
@@ -42,12 +46,12 @@ def _efficiency(usage: float, request: float) -> float | None:
     return usage / request
 
 
-def evaluate(m: WorkloadMetrics) -> WorkloadCost:
+def evaluate(m: WorkloadMetrics, threshold: float = EFFICIENCY_THRESHOLD) -> WorkloadCost:
     cpu_efficiency = _efficiency(m.cpu_usage_cores, m.cpu_request_cores)
     mem_efficiency = _efficiency(m.mem_usage_bytes, m.mem_request_bytes)
 
-    cpu_over = cpu_efficiency is not None and cpu_efficiency < EFFICIENCY_THRESHOLD
-    mem_over = mem_efficiency is not None and mem_efficiency < EFFICIENCY_THRESHOLD
+    cpu_over = cpu_efficiency is not None and cpu_efficiency < threshold
+    mem_over = mem_efficiency is not None and mem_efficiency < threshold
 
     recommended_cpu = (
         m.cpu_usage_cores * RECOMMENDATION_HEADROOM if cpu_over else m.cpu_request_cores
@@ -74,6 +78,8 @@ def evaluate(m: WorkloadMetrics) -> WorkloadCost:
 
     return WorkloadCost(
         workload=m.workload,
+        cpu_request_cores=m.cpu_request_cores,
+        mem_request_bytes=m.mem_request_bytes,
         cpu_efficiency=cpu_efficiency,
         mem_efficiency=mem_efficiency,
         cpu_overprovisioned=cpu_over,
@@ -85,21 +91,11 @@ def evaluate(m: WorkloadMetrics) -> WorkloadCost:
     )
 
 
-def rank_by_waste(metrics: list[WorkloadMetrics]) -> list[WorkloadCost]:
-    return sorted((evaluate(m) for m in metrics), key=lambda c: c.monthly_waste_usd, reverse=True)
-
-
-if __name__ == "__main__":
-    from costmon.metrics import pull_workload_metrics
-
-    metrics = pull_workload_metrics("http://localhost:9090", "cost-demo")
-    ranked = rank_by_waste(metrics)
-
-    print(f"{'workload':<26}{'cpu eff':>9}{'mem eff':>9}{'$/mo cost':>12}{'$/mo waste':>12}")
-    for c in ranked:
-        cpu_eff = f"{c.cpu_efficiency:.0%}" if c.cpu_efficiency is not None else "n/a"
-        mem_eff = f"{c.mem_efficiency:.0%}" if c.mem_efficiency is not None else "n/a"
-        print(
-            f"{c.workload:<26}{cpu_eff:>9}{mem_eff:>9}"
-            f"{c.monthly_cost_usd:>12.2f}{c.monthly_waste_usd:>12.2f}"
-        )
+def rank_by_waste(
+    metrics: list[WorkloadMetrics], threshold: float = EFFICIENCY_THRESHOLD
+) -> list[WorkloadCost]:
+    return sorted(
+        (evaluate(m, threshold) for m in metrics),
+        key=lambda c: c.monthly_waste_usd,
+        reverse=True,
+    )
