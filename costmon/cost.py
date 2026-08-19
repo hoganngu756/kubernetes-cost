@@ -26,10 +26,12 @@ RECOMMENDATION_HEADROOM = 1.3
 @dataclass
 class WorkloadCost:
     workload: str
-    # Carried through from WorkloadMetrics so a recommendation can be rendered
-    # as "current -> recommended" without re-joining against the input.
+    # Carried through from WorkloadMetrics so a recommendation or a delta bar
+    # can be rendered without re-joining against the input.
     cpu_request_cores: float
+    cpu_usage_cores: float
     mem_request_bytes: float
+    mem_usage_bytes: float
     cpu_efficiency: float | None
     mem_efficiency: float | None
     cpu_overprovisioned: bool
@@ -79,7 +81,9 @@ def evaluate(m: WorkloadMetrics, threshold: float = EFFICIENCY_THRESHOLD) -> Wor
     return WorkloadCost(
         workload=m.workload,
         cpu_request_cores=m.cpu_request_cores,
+        cpu_usage_cores=m.cpu_usage_cores,
         mem_request_bytes=m.mem_request_bytes,
+        mem_usage_bytes=m.mem_usage_bytes,
         cpu_efficiency=cpu_efficiency,
         mem_efficiency=mem_efficiency,
         cpu_overprovisioned=cpu_over,

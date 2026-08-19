@@ -54,22 +54,47 @@ tests/                          math and rendering checks, no cluster needed
 
 ## Sample workloads
 
-Deployed to the `cost-demo` namespace, each engineered to produce a known answer
-so the report can be checked against expectations rather than eyeballed:
+Deployed to the `cost-demo` namespace: **10 Deployments / 40 pods**, of which
+**3 (30%) are deliberately misprovisioned**. Every workload is engineered to
+produce a known answer, so the report can be checked against expectations
+rather than eyeballed.
+
+These numbers are *by construction, not a discovery* — this is a synthetic kind
+cluster whose whole purpose is to have a known right answer. It demonstrates the
+math on a fleet-sized input; it is not a finding about anyone's production cluster.
+
+### The 3 misprovisioned workloads
 
 | Workload | CPU req | Mem req | Actual (verified) | Verdict |
 |---|---|---|---|---|
 | `idle-hog` (×2 replicas) | 1000m (2×500m) | 1024Mi (2×512Mi) | 0m, 0.6Mi | Worst offender on both axes (0% efficiency) |
 | `overprovisioned-web` | 500m | 256Mi | 156m, 33.1Mi | Flagged on both axes (31% CPU, 13% mem) |
-| `rightsized-worker` | 130m | 64Mi | 101m, 48.6Mi | **Not** flagged — control case (78% CPU, 76% mem) |
 | `underprovisioned-cruncher` | 50m | 64Mi | 200m (throttled at limit), 16.4Mi | Flagged on **memory only** (26%); CPU is under-provisioned (400%) |
 
-Verified end-to-end against the live cluster in Milestone 2, with requests
-aggregated correctly across `idle-hog`'s 2 replicas.
+### The 7 honestly-sized workloads (control group)
+
+Sized off observed usage, so none should be flagged. If any of these appears in
+the recommendations block, the threshold or the math is wrong.
+
+| Workload | Replicas | CPU req | Mem req | Expected CPU eff | Expected mem eff |
+|---|---|---|---|---|---|
+| `api-gateway` | 8 | 80m | 64Mi | ~75% | ~65% |
+| `session-cache` | 6 | 32m | 128Mi | ~62% | ~76% |
+| `event-consumer` | 6 | 100m | 64Mi | ~67% | ~77% |
+| `search-indexer` | 5 | 100m | 128Mi | ~75% | ~64% |
+| `notification-worker` | 5 | 80m | 64Mi | ~63% | ~52% |
+| `metrics-forwarder` | 5 | 70m | 64Mi | ~71% | ~65% |
+| `rightsized-worker` | 1 | 130m | 64Mi | ~78% | ~76% |
+
+`notification-worker` sits closest to the 40% threshold (~52% memory) on purpose —
+it is the workload that would break first if the threshold logic regressed.
 
 `idle-hog` runs two replicas so the report has to aggregate across pods.
 `underprovisioned-cruncher` exists to prove efficiency is computed per-dimension —
 recommending a CPU cut there would be actively harmful.
+
+**Running cost:** the full fleet burns roughly 2.3 cores and ~2 GiB while up.
+`make down` ends it.
 
 **Gotcha found while verifying against the live cluster:** the busy-loop workloads
 run their "busy" phase for a fixed wall-clock duration, but a CPU *limit* below a

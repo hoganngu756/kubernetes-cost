@@ -1,0 +1,49 @@
+# Largest tier in the fleet: 8 replicas, so it dominates pod count without dominating waste.
+#
+# Honestly requested -> must NOT be flagged. The busy phase is throttled by the
+# 150m CPU limit, so average usage is limit * (busy/cycle) =
+# 150m * 2/5s = 60m (see rightsized-worker for the derivation).
+# Expected: CPU ~75%, memory ~65%.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: cost-demo
+spec:
+  replicas: 8
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              dd if=/dev/zero of=/ballast/block bs=1M count=40
+              while true; do
+                end=$(($(date +%s) + 2))
+                while [ $(date +%s) -lt $end ]; do :; done
+                sleep 3
+              done
+          resources:
+            requests:
+              cpu: 80m
+              memory: 64Mi
+            limits:
+              cpu: 150m
+              memory: 128Mi
+          volumeMounts:
+            - name: ballast
+              mountPath: /ballast
+      volumes:
+        - name: ballast
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

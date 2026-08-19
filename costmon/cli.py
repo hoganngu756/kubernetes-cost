@@ -3,7 +3,8 @@
     python3 -m costmon.cli --help
 
 Pulls per-workload metrics, prices the request/usage gap, and prints a
-waste-ranked table plus the concrete request changes that would close it.
+waste-ranked table, a bar chart of the request-vs-usage delta, and the
+concrete request changes that would close it.
 """
 import argparse
 import sys
@@ -12,6 +13,7 @@ from costmon.cost import EFFICIENCY_THRESHOLD, RECOMMENDATION_HEADROOM, Workload
 from costmon.metrics import pull_workload_metrics
 
 MIB = 2**20
+BAR_WIDTH = 34
 
 
 def _millicores(cores: float) -> str:
@@ -27,7 +29,42 @@ def _pct(ratio: float | None) -> str:
     return "n/a" if ratio is None else f"{ratio:.0%}"
 
 
-def render(costs: list[WorkloadCost], threshold: float) -> str:
+def _bar(request: float, usage: float, scale: float) -> str:
+    """One workload's request/usage bar, scaled against the fleet's largest.
+
+    Bar length is proportional to the *request*, so a row's width shows what
+    the workload costs and the unfilled tail shows what it wastes -- a tiny
+    workload at 0% efficiency should not look as alarming as a large one.
+    """
+    if scale <= 0:
+        return ""
+    req_cells = round(BAR_WIDTH * request / scale)
+    use_cells = round(BAR_WIDTH * usage / scale)
+    if use_cells > req_cells:
+        # Under-provisioned: usage runs past the request it was given.
+        return "\u2588" * req_cells + "\u2593" * (use_cells - req_cells)
+    return "\u2588" * use_cells + "\u2591" * (req_cells - use_cells)
+
+
+def render_deltas(costs: list[WorkloadCost]) -> str:
+    lines = ["Request vs. usage  (\u2588 used  \u2591 idle headroom  \u2593 over request)"]
+    dimensions = (
+        ("CPU", [(c.workload, c.cpu_request_cores, c.cpu_usage_cores) for c in costs], _millicores),
+        ("Memory", [(c.workload, c.mem_request_bytes, c.mem_usage_bytes) for c in costs], _mib),
+    )
+    for label, rows, fmt in dimensions:
+        scale = max((max(req, use) for _, req, use in rows), default=0.0)
+        lines.append("")
+        lines.append(f"  {label}")
+        for name, req, use in rows:
+            lines.append(
+                f"    {name:<26}{_bar(req, use, scale):<{BAR_WIDTH}}"
+                f"{fmt(req):>8} req{fmt(use):>9} used"
+            )
+    return "\n".join(lines)
+
+
+def render(costs: list[WorkloadCost], threshold: float, chart: bool = True) -> str:
     lines = [f"{'workload':<26}{'cpu eff':>9}{'mem eff':>9}{'$/mo cost':>12}{'$/mo waste':>12}"]
     for c in costs:
         lines.append(
@@ -39,9 +76,17 @@ def render(costs: list[WorkloadCost], threshold: float) -> str:
     total_waste = sum(c.monthly_waste_usd for c in costs)
     lines.append(f"{'TOTAL':<26}{'':>9}{'':>9}{total_cost:>12.2f}{total_waste:>12.2f}")
 
+    if chart:
+        lines.append("")
+        lines.append(render_deltas(costs))
+
     flagged = [c for c in costs if c.cpu_overprovisioned or c.mem_overprovisioned]
     if flagged:
         lines.append("")
+        lines.append(
+            f"Over-provisioned: {len(flagged)} of {len(costs)} workloads "
+            f"({len(flagged) / len(costs):.0%})"
+        )
         lines.append(
             f"Recommended request changes "
             f"(efficiency < {threshold:.0%}, {RECOMMENDATION_HEADROOM}x headroom):"
@@ -78,6 +123,12 @@ def main(argv: list[str] | None = None) -> int:
         default=EFFICIENCY_THRESHOLD,
         help="efficiency below which a workload is flagged (default: %(default)s)",
     )
+    parser.add_argument(
+        "--chart",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="draw request-vs-usage delta bars (default: on)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -100,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    print(render(rank_by_waste(metrics, args.threshold), args.threshold))
+    print(render(rank_by_waste(metrics, args.threshold), args.threshold, args.chart))
     return 0
 
 

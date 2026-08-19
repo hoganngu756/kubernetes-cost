@@ -1,0 +1,49 @@
+# Memory-heavy, CPU-light -- the opposite shape to the CPU-bound workers.
+#
+# Honestly requested -> must NOT be flagged. The busy phase is throttled by the
+# 100m CPU limit, so average usage is limit * (busy/cycle) =
+# 100m * 2/10s = 20m (see rightsized-worker for the derivation).
+# Expected: CPU ~62%, memory ~76%.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: session-cache
+  namespace: cost-demo
+spec:
+  replicas: 6
+  selector:
+    matchLabels:
+      app: session-cache
+  template:
+    metadata:
+      labels:
+        app: session-cache
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              dd if=/dev/zero of=/ballast/block bs=1M count=96
+              while true; do
+                end=$(($(date +%s) + 2))
+                while [ $(date +%s) -lt $end ]; do :; done
+                sleep 8
+              done
+          resources:
+            requests:
+              cpu: 32m
+              memory: 128Mi
+            limits:
+              cpu: 100m
+              memory: 192Mi
+          volumeMounts:
+            - name: ballast
+              mountPath: /ballast
+      volumes:
+        - name: ballast
+          emptyDir:
+            medium: Memory
+            sizeLimit: 128Mi

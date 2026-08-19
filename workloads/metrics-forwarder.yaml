@@ -1,0 +1,49 @@
+# Small steady forwarder, sized off observed usage.
+#
+# Honestly requested -> must NOT be flagged. The busy phase is throttled by the
+# 150m CPU limit, so average usage is limit * (busy/cycle) =
+# 150m * 2/6s = 50m (see rightsized-worker for the derivation).
+# Expected: CPU ~71%, memory ~65%.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics-forwarder
+  namespace: cost-demo
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: metrics-forwarder
+  template:
+    metadata:
+      labels:
+        app: metrics-forwarder
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              dd if=/dev/zero of=/ballast/block bs=1M count=40
+              while true; do
+                end=$(($(date +%s) + 2))
+                while [ $(date +%s) -lt $end ]; do :; done
+                sleep 4
+              done
+          resources:
+            requests:
+              cpu: 70m
+              memory: 64Mi
+            limits:
+              cpu: 150m
+              memory: 128Mi
+          volumeMounts:
+            - name: ballast
+              mountPath: /ballast
+      volumes:
+        - name: ballast
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

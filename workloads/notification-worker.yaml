@@ -1,0 +1,49 @@
+# Tightest honest margin in the fleet (~52% memory) -- the closest a non-flagged workload sits to the 40% threshold.
+#
+# Honestly requested -> must NOT be flagged. The busy phase is throttled by the
+# 100m CPU limit, so average usage is limit * (busy/cycle) =
+# 100m * 3/6s = 50m (see rightsized-worker for the derivation).
+# Expected: CPU ~63%, memory ~52%.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-worker
+  namespace: cost-demo
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: notification-worker
+  template:
+    metadata:
+      labels:
+        app: notification-worker
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              dd if=/dev/zero of=/ballast/block bs=1M count=32
+              while true; do
+                end=$(($(date +%s) + 3))
+                while [ $(date +%s) -lt $end ]; do :; done
+                sleep 3
+              done
+          resources:
+            requests:
+              cpu: 80m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: ballast
+              mountPath: /ballast
+      volumes:
+        - name: ballast
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

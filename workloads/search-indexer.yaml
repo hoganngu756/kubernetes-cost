@@ -1,0 +1,49 @@
+# Bursty shape: high CPU limit, low duty cycle.
+#
+# Honestly requested -> must NOT be flagged. The busy phase is throttled by the
+# 300m CPU limit, so average usage is limit * (busy/cycle) =
+# 300m * 2/8s = 75m (see rightsized-worker for the derivation).
+# Expected: CPU ~75%, memory ~64%.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search-indexer
+  namespace: cost-demo
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: search-indexer
+  template:
+    metadata:
+      labels:
+        app: search-indexer
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              dd if=/dev/zero of=/ballast/block bs=1M count=80
+              while true; do
+                end=$(($(date +%s) + 2))
+                while [ $(date +%s) -lt $end ]; do :; done
+                sleep 6
+              done
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 192Mi
+          volumeMounts:
+            - name: ballast
+              mountPath: /ballast
+      volumes:
+        - name: ballast
+          emptyDir:
+            medium: Memory
+            sizeLimit: 128Mi
