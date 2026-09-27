@@ -112,6 +112,41 @@ class EvaluateTests(unittest.TestCase):
         self.assertFalse(c.mem_overprovisioned)
         self.assertEqual(c.monthly_waste_usd, 0.0)
 
+    def test_idle_workload_recommendation_is_floored_per_pod_not_zero(self):
+        # A 0m / 0Mi request is never a sensible thing to apply.
+        m = WorkloadMetrics(
+            namespace="cost-demo",
+            workload="idle-hog",
+            cpu_request_cores=1.0,
+            cpu_usage_cores=0.0,
+            mem_request_bytes=1024 * MIB,
+            mem_usage_bytes=0.0,
+            pods=2,
+        )
+        c = evaluate(m)
+
+        self.assertAlmostEqual(c.recommended_cpu_request_cores, 0.020)  # 10m * 2 pods
+        self.assertAlmostEqual(c.recommended_mem_request_bytes, 32 * MIB)  # 16Mi * 2 pods
+        # hand-calculated: cpu (1.0-0.02)*0.0312*730 + mem (1024-32)/1024*0.0042*730
+        self.assertAlmostEqual(c.monthly_waste_usd, 22.32048 + 2.9701875, places=4)
+
+    def test_floor_never_raises_a_recommendation_above_the_current_request(self):
+        # 5m / 8Mi requests are already below the floor: nothing to cut, no
+        # negative waste.
+        m = WorkloadMetrics(
+            namespace="cost-demo",
+            workload="tiny",
+            cpu_request_cores=0.005,
+            cpu_usage_cores=0.0,
+            mem_request_bytes=8 * MIB,
+            mem_usage_bytes=1 * MIB,
+        )
+        c = evaluate(m)
+
+        self.assertAlmostEqual(c.recommended_cpu_request_cores, 0.005)
+        self.assertAlmostEqual(c.recommended_mem_request_bytes, 8 * MIB)
+        self.assertEqual(c.monthly_waste_usd, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

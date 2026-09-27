@@ -4,9 +4,12 @@ The table is the deliverable, so the two things worth pinning down are the
 ones a reader would trust without re-deriving: that TOTAL actually sums the
 rows, and that only the flagged axis produces a recommendation.
 """
+import io
 import unittest
+from contextlib import redirect_stderr
+from unittest import mock
 
-from costmon.cli import BAR_WIDTH, _bar, render
+from costmon.cli import BAR_WIDTH, _bar, main, render
 from costmon.cost import rank_by_waste
 from costmon.metrics import WorkloadMetrics
 
@@ -87,6 +90,20 @@ class BarTests(unittest.TestCase):
 
     def test_zero_scale_does_not_divide_by_zero(self):
         self.assertEqual(_bar(request=0.0, usage=0.0, scale=0.0), "")
+
+
+
+class MainErrorTests(unittest.TestCase):
+    def test_rejected_query_shows_prometheus_error_not_the_port_forward_hint(self):
+        stderr = io.StringIO()
+        with mock.patch(
+            "costmon.cli.pull_workload_metrics",
+            side_effect=RuntimeError("Prometheus query failed: bad duration"),
+        ), redirect_stderr(stderr):
+            self.assertEqual(main(["--window", "foo"]), 1)
+
+        self.assertIn("bad duration", stderr.getvalue())
+        self.assertNotIn("port-forward", stderr.getvalue())
 
 
 if __name__ == "__main__":

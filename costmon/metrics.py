@@ -8,6 +8,7 @@ way. Doing it in Python keeps each PromQL query simple and keeps the join
 logic in one place that's easy to unit test later (see README for the
 equivalent single PromQL query, validated against the live cluster).
 """
+from collections import Counter
 from dataclasses import dataclass
 
 from costmon.prometheus import instant_query
@@ -34,6 +35,8 @@ class WorkloadMetrics:
     cpu_usage_cores: float
     mem_request_bytes: float
     mem_usage_bytes: float
+    # Values above are summed across this many pods; per-pod minimums scale by it.
+    pods: int = 1
 
 
 def _pod_to_deployment(base_url: str, namespace: str) -> dict[str, str]:
@@ -123,7 +126,7 @@ def pull_workload_metrics(
         pod_to_deployment,
     )
 
-    deployments = sorted(set(pod_to_deployment.values()))
+    pod_counts = Counter(pod_to_deployment.values())
     return [
         WorkloadMetrics(
             namespace=namespace,
@@ -132,6 +135,7 @@ def pull_workload_metrics(
             cpu_usage_cores=cpu_usage.get(d, 0.0),
             mem_request_bytes=mem_request.get(d, 0.0),
             mem_usage_bytes=mem_usage.get(d, 0.0),
+            pods=pod_counts[d],
         )
-        for d in deployments
+        for d in sorted(pod_counts)
     ]

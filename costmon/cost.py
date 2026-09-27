@@ -22,6 +22,11 @@ EFFICIENCY_THRESHOLD = 0.4
 # Recommended request = usage * this headroom multiplier, when flagged.
 RECOMMENDATION_HEADROOM = 1.3
 
+# Per-pod floor on a recommendation. An idle workload's usage * headroom is
+# ~0, and a 0m / 0Mi request is not a setting anyone should apply.
+MIN_CPU_REQUEST_CORES = 0.010
+MIN_MEM_REQUEST_BYTES = 16 * 2**20
+
 
 @dataclass
 class WorkloadCost:
@@ -48,6 +53,12 @@ def _efficiency(usage: float, request: float) -> float | None:
     return usage / request
 
 
+def _recommend(usage: float, request: float, floor: float) -> float:
+    # Capped at the current request: the axis was flagged for being too big,
+    # so a floor above it must not turn the recommendation into an increase.
+    return min(request, max(usage * RECOMMENDATION_HEADROOM, floor))
+
+
 def evaluate(m: WorkloadMetrics, threshold: float = EFFICIENCY_THRESHOLD) -> WorkloadCost:
     cpu_efficiency = _efficiency(m.cpu_usage_cores, m.cpu_request_cores)
     mem_efficiency = _efficiency(m.mem_usage_bytes, m.mem_request_bytes)
@@ -56,10 +67,14 @@ def evaluate(m: WorkloadMetrics, threshold: float = EFFICIENCY_THRESHOLD) -> Wor
     mem_over = mem_efficiency is not None and mem_efficiency < threshold
 
     recommended_cpu = (
-        m.cpu_usage_cores * RECOMMENDATION_HEADROOM if cpu_over else m.cpu_request_cores
+        _recommend(m.cpu_usage_cores, m.cpu_request_cores, MIN_CPU_REQUEST_CORES * m.pods)
+        if cpu_over
+        else m.cpu_request_cores
     )
     recommended_mem = (
-        m.mem_usage_bytes * RECOMMENDATION_HEADROOM if mem_over else m.mem_request_bytes
+        _recommend(m.mem_usage_bytes, m.mem_request_bytes, MIN_MEM_REQUEST_BYTES * m.pods)
+        if mem_over
+        else m.mem_request_bytes
     )
 
     monthly_cost = (

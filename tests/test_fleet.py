@@ -119,6 +119,7 @@ def _fleet_metrics() -> list[WorkloadMetrics]:
                 cpu_usage_cores=(cpu_used_m / 1000) * d["replicas"],
                 mem_request_bytes=d["mem"] * d["replicas"],
                 mem_usage_bytes=mem_used_mib * MIB * d["replicas"],
+                pods=d["replicas"],
             )
         )
     return metrics

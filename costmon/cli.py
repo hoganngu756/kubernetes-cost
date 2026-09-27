@@ -143,6 +143,10 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+    except RuntimeError as exc:
+        # Prometheus answered but rejected the query -- its message says why.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     if not metrics:
         print(
