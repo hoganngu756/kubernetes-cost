@@ -135,6 +135,51 @@ class ProtocolTests(unittest.TestCase):
         self.assertTrue(result["isError"])
         self.assertIn("port-forward", result["content"][0]["text"])
 
+    def test_non_object_params_or_arguments_are_invalid_params_not_a_crash(self):
+        responses = drive(
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": ["x"]},
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": "get_cost_report", "arguments": "x"},
+                },
+                {"jsonrpc": "2.0", "id": 3, "method": "ping"},
+            ]
+        )
+        self.assertEqual(responses[0]["error"]["code"], -32602)
+        self.assertEqual(responses[1]["error"]["code"], -32602)
+        self.assertEqual(responses[2]["result"], {})  # loop survived
+
+    def test_non_numeric_threshold_is_a_tool_error_not_a_crash(self):
+        for bad in ("0.5", None, True):
+            with self.subTest(threshold=bad):
+                result = call("get_cost_report", {"threshold": bad})
+                self.assertTrue(result["isError"])
+                self.assertIn("threshold", result["content"][0]["text"])
+
+    def test_failed_prometheus_query_is_a_tool_error_not_a_crash(self):
+        # prometheus.instant_query raises RuntimeError on a non-success status.
+        with mock.patch(
+            "costmon.mcp_server.pull_workload_metrics",
+            side_effect=RuntimeError("Prometheus query failed"),
+        ):
+            responses = drive(
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": "list_workloads", "arguments": {}},
+                    },
+                    {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+                ]
+            )
+        self.assertTrue(responses[0]["result"]["isError"])
+        self.assertIn("Prometheus query failed", responses[0]["result"]["content"][0]["text"])
+        self.assertEqual(responses[1]["result"], {})  # loop survived
+
 
 class ToolTests(unittest.TestCase):
     def test_list_workloads_reports_requests_and_usage(self):

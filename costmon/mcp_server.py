@@ -140,7 +140,7 @@ class CostmonServer:
         }
 
     def get_cost_report(self, args: dict) -> dict:
-        threshold = args.get("threshold", EFFICIENCY_THRESHOLD)
+        threshold = _threshold(args)
         ranked = rank_by_waste(self._pull(args), threshold)
         flagged = [c for c in ranked if c.cpu_overprovisioned or c.mem_overprovisioned]
         return {
@@ -170,7 +170,7 @@ class CostmonServer:
         }
 
     def get_rightsizing_recommendations(self, args: dict) -> dict:
-        threshold = args.get("threshold", EFFICIENCY_THRESHOLD)
+        threshold = _threshold(args)
         ranked = rank_by_waste(self._pull(args), threshold)
         recommendations = []
         for c in ranked:
@@ -226,6 +226,10 @@ class CostmonServer:
             return _tool_error(
                 f"could not reach Prometheus: {exc}. Is `make port-forward` running?"
             )
+        except Exception as exc:
+            # A bad argument, a failed PromQL query, or a bug: fail this call
+            # only. Letting it escape would end serve() and the agent's session.
+            return _tool_error(f"{type(exc).__name__}: {exc}")
         return {
             "content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
             "structuredContent": payload,
@@ -245,6 +249,8 @@ class CostmonServer:
         # below arrives as an id-bearing request, so this needs no exception.
         if req_id is None:
             return None
+        if not isinstance(params, dict):
+            return _error(req_id, -32602, "params must be an object")
 
         if method == "initialize":
             requested = params.get("protocolVersion")
@@ -269,7 +275,10 @@ class CostmonServer:
             name = params.get("name")
             if not isinstance(name, str):
                 return _error(req_id, -32602, "params.name must be a string")
-            return _result(req_id, self._call_tool(name, params.get("arguments") or {}))
+            arguments = params.get("arguments") or {}
+            if not isinstance(arguments, dict):
+                return _error(req_id, -32602, "params.arguments must be an object")
+            return _result(req_id, self._call_tool(name, arguments))
 
         return _error(req_id, -32601, f"method not found: {method}")
 
@@ -288,6 +297,14 @@ class CostmonServer:
             response = self.handle(request)
             if response is not None:
                 _write(stdout, response)
+
+
+def _threshold(args: dict) -> float:
+    value = args.get("threshold", EFFICIENCY_THRESHOLD)
+    # bool is a subclass of int, so it has to be excluded explicitly.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"threshold must be a number, got {value!r}")
+    return value
 
 
 def _round_or_none(value: float | None) -> float | None:
