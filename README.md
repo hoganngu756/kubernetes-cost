@@ -44,7 +44,8 @@ costmon/pricing.py       static blended $/vCPU-hr and $/GiB-hr
 costmon/cost.py          efficiency, recommendations, waste $
 costmon/cli.py           the report -- CLI entry point
 costmon/mcp_server.py    the same pipeline as MCP tools for agents
-tests/                   math, rendering and protocol checks, no cluster needed
+tests/                   math, rendering, protocol and fleet-shape checks
+                         no cluster needed
 ```
 
 ## The demo fleet
@@ -146,7 +147,7 @@ the agent can read it and retry.
 ## Testing
 
 ```sh
-python3 -m unittest discover -v     # 24 tests, no cluster required
+python3 -m unittest discover -v     # 30 tests, no cluster required
 ```
 
 `test_cost.py` checks waste $ against hand-calculated values; `test_cli.py`
@@ -154,3 +155,10 @@ covers table totals and delta-bar geometry; `test_mcp_server.py` drives real
 JSON-RPC frames through `serve()`. The fabricated inputs cover what the live
 cluster can't produce — simultaneous under-CPU/over-memory, zero requests, a
 refused connection.
+
+`test_fleet.py` guards the headline numbers above. It parses `workloads/*.yaml`
+for requests and replica counts, pairs them with each manifest's documented
+duty-cycle usage, and runs the real cost code over the result — so the
+10-Deployment / 40-pod / 30%-flagged claim is re-derived on every test run
+rather than asserted in prose. Editing a replica count or a request fails it,
+as does a control-group workload drifting under the threshold.

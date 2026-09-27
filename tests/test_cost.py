@@ -35,10 +35,10 @@ class EvaluateTests(unittest.TestCase):
         self.assertAlmostEqual(c.recommended_cpu_request_cores, 0.065)  # 0.05 * 1.3
         self.assertAlmostEqual(c.recommended_mem_request_bytes, 66.56 * MIB)  # 51.2 * 1.3
 
-        # hand-calculated: monthly_cost = (0.5*0.048 + 0.5*0.012) * 730 = 21.9
-        self.assertAlmostEqual(c.monthly_cost_usd, 21.9, places=2)
-        # hand-calculated: cpu_waste=15.2424, mem_waste=3.8106 -> 19.053
-        self.assertAlmostEqual(c.monthly_waste_usd, 19.053, places=2)
+        # hand-calculated: monthly_cost = (0.5*0.0312 + 0.5*0.0042) * 730 = 12.921
+        self.assertAlmostEqual(c.monthly_cost_usd, 12.921, places=2)
+        # hand-calculated: cpu_waste=9.90756, mem_waste=1.33371 -> 11.24127
+        self.assertAlmostEqual(c.monthly_waste_usd, 11.24127, places=2)
 
     def test_rightsized_workload_is_not_flagged_and_has_zero_waste(self):
         m = WorkloadMetrics(
@@ -78,8 +78,8 @@ class EvaluateTests(unittest.TestCase):
         # CPU recommendation must NOT be cut below the current request.
         self.assertAlmostEqual(c.recommended_cpu_request_cores, m.cpu_request_cores)
         self.assertAlmostEqual(c.recommended_mem_request_bytes, 20.8 * MIB)  # 16 * 1.3
-        # hand-calculated: mem_waste only = (64-20.8)/1024 * 0.012 * 730
-        self.assertAlmostEqual(c.monthly_waste_usd, 0.3695625, places=4)
+        # hand-calculated: mem_waste only = (64-20.8)/1024 * 0.0042 * 730
+        self.assertAlmostEqual(c.monthly_waste_usd, 0.12934688, places=4)
 
     def test_threshold_override_changes_what_is_flagged(self):
         # 50% efficient: flagged at the CLI's --threshold 0.6, not at the 0.4 default.

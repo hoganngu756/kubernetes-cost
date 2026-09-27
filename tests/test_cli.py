@@ -27,15 +27,15 @@ def _recommendations(report):
 class RenderTests(unittest.TestCase):
     def test_total_row_sums_cost_and_waste(self):
         metrics = [
-            # cost = (0.5*0.048 + 0.5*0.012) * 730 = 21.90, waste = 19.053
+            # cost = (0.5*0.0312 + 0.5*0.0042) * 730 = 12.92, waste = 11.241
             WorkloadMetrics("cost-demo", "web", 0.5, 0.05, 512 * MIB, 51.2 * MIB),
-            # cost = (0.13*0.048 + 0.0625*0.012) * 730 = 5.10, waste = 0
+            # cost = (0.13*0.0312 + 0.0625*0.0042) * 730 = 3.15, waste = 0
             WorkloadMetrics("cost-demo", "worker", 0.13, 0.078, 64 * MIB, 38.4 * MIB),
         ]
         total = next(l for l in _report(metrics).splitlines() if l.startswith("TOTAL"))
 
-        self.assertIn("27.00", total)  # 21.90 + 5.10
-        self.assertIn("19.05", total)  # 19.053 + 0
+        self.assertIn("16.07", total)  # 12.92 + 3.15
+        self.assertIn("11.24", total)  # 11.241 + 0
 
     def test_only_the_flagged_axis_gets_a_recommendation(self):
         # Mirrors underprovisioned-cruncher: needs more CPU, wastes memory.
