@@ -1,164 +1,177 @@
-# Kubernetes Resource and Cost Monitor
+# costmon
 
-Pulls container CPU/memory usage and resource requests out of Prometheus, prices
-the gap against a static AWS-style rate table, and reports which workloads are
-wasting the most money — as a CLI report and as MCP tools for LLM agents.
+Finds Kubernetes workloads that request more CPU and memory than they use, and
+estimates what that costs per month. It reads usage and requests from
+Prometheus, compares them per Deployment, and suggests smaller requests. It
+runs as a CLI report or as an MCP server for LLM agents.
 
-Built from scratch deliberately: the learning targets are metrics-pipeline design
-and cost-calculation logic. Reasoning behind the design choices is in
-[DESIGN.md](DESIGN.md).
+Pure Python standard library, no dependencies.
 
-## Status
+## Requirements
 
-- [x] **M1** — cluster, monitoring stack, sample workloads
-- [x] **M2** — PromQL queries + Python metrics puller (`costmon/metrics.py`)
-- [x] **M3** — pricing table, efficiency ratios, waste calculation (`costmon/cost.py`)
-- [x] **M4** — peak-aware statistics + CLI report with delta bars (`costmon/cli.py`)
-- [x] **M5** — the pipeline exposed to LLM agents as MCP tools (`costmon/mcp_server.py`)
+- Python 3.10+
+- For the local demo cluster: `docker`, `kind`, `helm`, `kubectl`
 
 ## Quick start
-
-Needs `docker` (running), `kind`, `helm`, `kubectl`, `python3`.
 
 ```sh
 brew install kind helm
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 
-make up               # cluster + monitoring + workloads (~5 min)
-make port-forward     # in another shell -- everything below reads Prometheus over it
+make up             # kind cluster, kube-prometheus-stack, demo workloads (~5 min)
+make port-forward   # keep running in another shell; exposes Prometheus on :9090
 python3 -m costmon.cli
-make down             # tear it all down
+make down           # delete the cluster
 ```
 
-`make up` is `cluster-up` → `monitoring-up` → `workloads-up`; each runs alone.
-If it fails with `node(s) already exist`, run `make down` first.
+Wait about 15 minutes after `make up` so Prometheus has a full window of data.
+If `make up` fails with `node(s) already exist`, run `make down` first.
+
+Run commands from the repo root; the package is not installable yet.
+
+## Usage
+
+```sh
+python3 -m costmon.cli [--prometheus-url URL] [--namespace NS] [--window 15m]
+                       [--threshold 0.4] [--no-chart]
+```
+
+| Flag | Default | |
+|---|---|---|
+| `--prometheus-url` | `http://localhost:9090` | Prometheus HTTP API |
+| `--namespace` | `cost-demo` | Namespace to analyse |
+| `--window` | `15m` | How far back to look at usage (any PromQL duration) |
+| `--threshold` | `0.4` | Flag an axis when usage / request is below this |
+| `--chart` / `--no-chart` | on | Request-vs-usage bar chart |
+
+Example against the demo fleet (chart omitted):
+
+```
+workload                    cpu eff  mem eff   $/mo cost  $/mo waste
+idle-hog                         0%       0%       25.84       25.29
+overprovisioned-web             33%      13%       12.15        7.08
+underprovisioned-cruncher      400%      27%        1.33        0.13
+api-gateway                     75%      64%       16.11        0.00
+...
+TOTAL                                             112.38       32.50
+
+Over-provisioned: 3 of 10 workloads (30%)
+Recommended request changes (efficiency < 40%, 1.3x headroom):
+  idle-hog                  cpu 1000m -> 20m          mem 1024Mi -> 32Mi
+  overprovisioned-web       cpu 500m -> 217m          mem 256Mi -> 43Mi
+  underprovisioned-cruncher cpu ok                    mem 64Mi -> 22Mi
+```
+
+Requests and recommendations are totals across all of a Deployment's pods.
+Divide by the replica count to get the per-container value (`idle-hog` has 2
+replicas, so 20m means 10m each).
+
+## How it works
+
+**Usage.** CPU is the p95 of the per-container CPU rate over the window. Memory
+is the peak working set over the window. Both are summed per Deployment. A
+peak-aware number is used instead of an average because an average-based
+request would be exceeded half the time.
+
+**Efficiency.** `usage / request`, calculated separately for CPU and memory.
+A workload can be flagged on one axis and not the other.
+`underprovisioned-cruncher` uses 4x its CPU request and a quarter of its
+memory request, so only memory gets a recommendation.
+
+**Recommendation.** For a flagged axis: `usage × 1.3`, with a minimum of 10m
+CPU / 16Mi memory per pod, and never more than the current request.
+
+**Cost.** Priced on requests, not usage, since requests are what the scheduler
+reserves. Rates come from an m5.xlarge (us-east-1 on-demand, $0.192/hr, 4 vCPU
+/ 16 GiB), split 65% CPU / 35% memory:
+
+| | Rate |
+|---|---|
+| CPU | $0.0312 per vCPU-hour |
+| Memory | $0.0042 per GiB-hour |
+| Month | 730 hours |
+
+Waste is the monthly cost of `request - recommendation` on flagged axes only.
+A workload above the threshold shows $0 waste even if it has some slack.
+
+**Limitations**
+
+- Only pods owned by a Deployment are counted. StatefulSets, DaemonSets, Jobs
+  and bare pods are skipped.
+- One namespace at a time.
+- Pricing is a fixed snapshot, not per node type or region.
+- No auth support for Prometheus.
+
+## Demo fleet
+
+`workloads/` holds 10 Deployments (40 pods) in `cost-demo`. Each one runs a
+busybox loop tuned to a known CPU and memory usage (the math is in each
+manifest's header comment), so the report has a known correct answer.
+
+| Workload | Pods | Requests per pod | Expected result |
+|---|---|---|---|
+| `idle-hog` | 2 | 500m / 512Mi | Flagged on CPU and memory; does nothing |
+| `overprovisioned-web` | 1 | 500m / 256Mi | Flagged on CPU and memory |
+| `underprovisioned-cruncher` | 1 | 50m / 64Mi | Flagged on memory only; needs more CPU |
+| `api-gateway` | 8 | 80m / 64Mi | Not flagged |
+| `event-consumer` | 6 | 100m / 64Mi | Not flagged |
+| `session-cache` | 6 | 32m / 128Mi | Not flagged |
+| `search-indexer` | 5 | 100m / 128Mi | Not flagged |
+| `notification-worker` | 5 | 80m / 64Mi | Not flagged (closest to the threshold) |
+| `metrics-forwarder` | 5 | 70m / 64Mi | Not flagged |
+| `rightsized-worker` | 1 | 130m / 64Mi | Not flagged |
+
+The seven unflagged workloads are the control group: if one shows up in the
+recommendations, something is wrong. The fleet uses about 2.3 cores and 2 GiB
+while running.
+
+## MCP server
+
+```sh
+claude mcp add costmon -- python3 -m costmon.mcp_server
+```
+
+Or in a client config:
+
+```json
+{"mcpServers": {"costmon": {"command": "python3", "args": ["-m", "costmon.mcp_server"]}}}
+```
+
+| Tool | Returns |
+|---|---|
+| `list_workloads` | Requests and usage per Deployment |
+| `get_cost_report` | Efficiency, monthly cost and waste per workload, ranked by waste, with totals |
+| `get_rightsizing_recommendations` | Current vs. recommended requests for flagged workloads |
+
+All arguments (`namespace`, `window`, `threshold`, `prometheus_url`) are
+optional. Server-wide defaults can be set with the same flags as the CLI
+(`--prometheus-url`, `--namespace`, `--window`).
+
+The server speaks JSON-RPC over stdio directly rather than through the MCP SDK.
+It still needs `make port-forward` running; if Prometheus is unreachable or
+rejects a query, the tool call returns an error and the server keeps running.
 
 ## Layout
 
 ```
-cluster/                 kind + kube-prometheus-stack config, versions pinned
-workloads/               10 Deployments / 40 pods, 3 deliberately misprovisioned
-costmon/prometheus.py    Prometheus HTTP API wrapper (stdlib only)
-costmon/metrics.py       pod -> Deployment join, requests vs. usage
-costmon/pricing.py       static blended $/vCPU-hr and $/GiB-hr
-costmon/cost.py          efficiency, recommendations, waste $
-costmon/cli.py           the report -- CLI entry point
-costmon/mcp_server.py    the same pipeline as MCP tools for agents
-tests/                   math, rendering, protocol and fleet-shape checks
-                         no cluster needed
+cluster/                kind and kube-prometheus-stack config (versions pinned)
+workloads/              demo Deployments
+costmon/prometheus.py   Prometheus HTTP client
+costmon/metrics.py      PromQL queries, pod -> Deployment join
+costmon/pricing.py      rates
+costmon/cost.py         efficiency, recommendations, waste
+costmon/cli.py          report
+costmon/mcp_server.py   MCP server
+tests/                  unit tests, no cluster needed
 ```
 
-## The demo fleet
-
-10 Deployments / 40 pods in the `cost-demo` namespace, of which **3 (30%) are
-deliberately misprovisioned**. Every workload is engineered to produce a known
-answer, so the report can be checked against expectations rather than eyeballed.
-
-These numbers are *by construction, not a discovery* — this is a synthetic kind
-cluster whose purpose is to have a known right answer. It demonstrates the math
-on a fleet-sized input; it is not a finding about anyone's production cluster.
-
-| Workload | Pods | CPU req | Mem req | CPU eff | Mem eff | Verdict |
-|---|---|---|---|---|---|---|
-| `idle-hog` | 2 | 1000m | 1024Mi | 0% | 0% | **Flagged** — reserves both, uses neither |
-| `overprovisioned-web` | 1 | 500m | 256Mi | 35% | 17% | **Flagged** on both axes |
-| `underprovisioned-cruncher` | 1 | 50m | 64Mi | 400% | 26% | **Flagged on memory only** — needs *more* CPU |
-| `api-gateway` | 8 | 640m | 512Mi | 77% | 71% | ok |
-| `event-consumer` | 6 | 600m | 384Mi | 69% | 86% | ok |
-| `session-cache` | 6 | 192m | 768Mi | 66% | 78% | ok |
-| `search-indexer` | 5 | 500m | 640Mi | 77% | 68% | ok |
-| `notification-worker` | 5 | 400m | 320Mi | 64% | 57% | ok |
-| `metrics-forwarder` | 5 | 350m | 320Mi | 73% | 70% | ok |
-| `rightsized-worker` | 1 | 130m | 64Mi | 80% | 87% | ok |
-
-Efficiencies measured live at a 15m window. The seven honestly-sized workloads
-are the control group: if any appears in the recommendations, the math is wrong.
-`notification-worker` sits closest to the threshold (57%) on purpose.
-`underprovisioned-cruncher` proves efficiency is computed per-dimension.
-
-**Running cost:** the fleet burns ~2.3 cores and ~2 GiB while up.
-
-## The report
+## Tests
 
 ```sh
-python3 -m costmon.cli --help     # --namespace --window --threshold --no-chart
+python3 -m unittest discover -v
 ```
 
-Real output, 40-pod cluster, 15m window (bars abbreviated here):
-
-```
-workload                    cpu eff  mem eff   $/mo cost  $/mo waste
-idle-hog                         0%       0%       43.80       43.79
-overprovisioned-web             35%      17%       19.71       11.35
-underprovisioned-cruncher      400%      26%        2.30        0.37
-api-gateway                     77%      71%       26.81        0.00
-...
-TOTAL                                             190.07       55.51
-
-Request vs. usage  (█ used  ░ idle headroom  ▓ over request)
-
-  CPU
-    idle-hog                  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   1000m req       0m used
-    overprovisioned-web       ██████░░░░░░░░░░░                     500m req     173m used
-    underprovisioned-cruncher ██▓▓▓▓▓                                50m req     200m used
-    api-gateway               █████████████████░░░░░                640m req     491m used
-
-Over-provisioned: 3 of 10 workloads (30%)
-Recommended request changes (efficiency < 40%, 1.3x headroom):
-  idle-hog                  cpu 1000m -> 0m           mem 1024Mi -> 1Mi
-  overprovisioned-web       cpu 500m -> 225m          mem 256Mi -> 56Mi
-  underprovisioned-cruncher cpu ok                    mem 64Mi -> 21Mi
-```
-
-Bar length is proportional to the *request*, so a row's width shows what the
-workload costs and the unfilled tail shows what it wastes — `idle-hog` reads as
-far worse than `underprovisioned-cruncher`, which is also badly sized but 20x
-smaller. `▓` marks usage running past the request.
-
-Only the flagged axis gets a recommendation: `cpu ok` on
-`underprovisioned-cruncher` is the per-dimension logic showing its work.
-
-## MCP server
-
-The same pipeline as MCP tools, so an agent can ask about utilization and cost
-instead of parsing CLI output.
-
-```sh
-claude mcp add costmon -- python3 -m costmon.mcp_server
-make mcp        # or run it directly on stdio
-```
-
-| Tool | Answers |
-|---|---|
-| `list_workloads` | "what is this namespace using?" |
-| `get_cost_report` | "what is it costing?" — efficiency, cost, waste, ranked, plus totals |
-| `get_rightsizing_recommendations` | "what should I change?" — flagged workloads only |
-
-Speaks MCP over stdio as newline-delimited JSON-RPC 2.0, hand-rolled rather than
-via the SDK to keep the project dependency-free. Every argument (`namespace`,
-`window`, `threshold`, `prometheus_url`) is optional with a server-side default,
-so a call with `{}` still returns a real answer.
-
-**Caveat:** a client may launch the server at any time, but the pipeline only
-works while `make port-forward` is running. An unreachable Prometheus comes back
-as a *tool* error carrying that hint (`isError: true`), not a protocol error, so
-the agent can read it and retry.
-
-## Testing
-
-```sh
-python3 -m unittest discover -v     # 30 tests, no cluster required
-```
-
-`test_cost.py` checks waste $ against hand-calculated values; `test_cli.py`
-covers table totals and delta-bar geometry; `test_mcp_server.py` drives real
-JSON-RPC frames through `serve()`. The fabricated inputs cover what the live
-cluster can't produce — simultaneous under-CPU/over-memory, zero requests, a
-refused connection.
-
-`test_fleet.py` guards the headline numbers above. It parses `workloads/*.yaml`
-for requests and replica counts, pairs them with each manifest's documented
-duty-cycle usage, and runs the real cost code over the result — so the
-10-Deployment / 40-pod / 30%-flagged claim is re-derived on every test run
-rather than asserted in prose. Editing a replica count or a request fails it,
-as does a control-group workload drifting under the threshold.
+No cluster needed. Cost and waste are checked against hand-calculated values,
+the MCP server is tested by sending JSON-RPC through its stdio loop, and
+`test_fleet.py` parses `workloads/*.yaml` to confirm the demo fleet still
+produces the results in the table above.
