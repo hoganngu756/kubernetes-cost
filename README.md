@@ -12,6 +12,15 @@ Pure Python standard library, no dependencies.
 - Python 3.10+
 - For the local demo cluster: `docker`, `kind`, `helm`, `kubectl`
 
+## Install
+
+```sh
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+```
+
+This puts `costmon` and `costmon-mcp` on the venv's PATH.
+
 ## Quick start
 
 ```sh
@@ -20,20 +29,18 @@ helm repo add prometheus-community https://prometheus-community.github.io/helm-c
 
 make up             # kind cluster, kube-prometheus-stack, demo workloads (~5 min)
 make port-forward   # keep running in another shell; exposes Prometheus on :9090
-python3 -m costmon.cli
+costmon
 make down           # delete the cluster
 ```
 
 Wait about 15 minutes after `make up` so Prometheus has a full window of data.
 If `make up` fails with `node(s) already exist`, run `make down` first.
 
-Run commands from the repo root; the package is not installable yet.
-
 ## Usage
 
 ```sh
-python3 -m costmon.cli [--prometheus-url URL] [--namespace NS] [--window 15m]
-                       [--threshold 0.4] [--no-chart]
+costmon [--prometheus-url URL] [--namespace NS] [--window 15m]
+        [--threshold 0.4] [--no-chart]
 ```
 
 | Flag | Default | |
@@ -128,14 +135,17 @@ while running.
 ## MCP server
 
 ```sh
-claude mcp add costmon -- python3 -m costmon.mcp_server
+claude mcp add costmon -- /path/to/repo/.venv/bin/costmon-mcp
 ```
 
 Or in a client config:
 
 ```json
-{"mcpServers": {"costmon": {"command": "python3", "args": ["-m", "costmon.mcp_server"]}}}
+{"mcpServers": {"costmon": {"command": "/path/to/repo/.venv/bin/costmon-mcp"}}}
 ```
+
+Use the full path to the venv's `costmon-mcp`, since the client won't have
+the venv activated.
 
 | Tool | Returns |
 |---|---|
