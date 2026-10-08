@@ -227,6 +227,7 @@ class ToolTests(unittest.TestCase):
         (rec,) = response["result"]["structuredContent"]["recommendations"]
 
         self.assertEqual(rec["pods"], 2)
+        self.assertEqual(rec["kind"], "Deployment")
         self.assertEqual(rec["cpu"]["current_request_cores_per_pod"], 0.5)
         self.assertEqual(rec["cpu"]["recommended_request_cores_per_pod"], 0.01)
         self.assertEqual(rec["memory"]["current_request_mib_per_pod"], 512.0)

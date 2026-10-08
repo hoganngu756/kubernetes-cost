@@ -31,6 +31,7 @@ MIN_MEM_REQUEST_BYTES = 16 * 2**20
 @dataclass
 class WorkloadCost:
     workload: str
+    kind: str
     # Carried through from WorkloadMetrics so a recommendation or a delta bar
     # can be rendered without re-joining against the input.
     cpu_request_cores: float
@@ -98,6 +99,7 @@ def evaluate(m: WorkloadMetrics, threshold: float = EFFICIENCY_THRESHOLD) -> Wor
 
     return WorkloadCost(
         workload=m.workload,
+        kind=m.kind,
         cpu_request_cores=m.cpu_request_cores,
         cpu_usage_cores=m.cpu_usage_cores,
         mem_request_bytes=m.mem_request_bytes,

@@ -48,6 +48,16 @@ class RenderTests(unittest.TestCase):
         self.assertIn("cpu ok", rec)  # never recommend cutting an under-provisioned axis
         self.assertIn("mem 64Mi -> 21Mi", rec)  # 16 * 1.3 = 20.8
 
+    def test_workloads_are_named_kind_slash_name(self):
+        metrics = [
+            WorkloadMetrics("ns", "web", 0.5, 0.05, 512 * MIB, 51.2 * MIB),
+            WorkloadMetrics("ns", "db", 0.5, 0.05, 512 * MIB, 51.2 * MIB, kind="StatefulSet"),
+        ]
+        report = _report(metrics)
+
+        self.assertIn("deployment/web ", report)
+        self.assertIn("statefulset/db ", report)
+
     def test_recommendations_are_per_pod_not_deployment_totals(self):
         # Requests are set per pod, so a total would not be copy-pasteable.
         # Inputs are Deployment totals across 2 pods: 1000m / 1024Mi requested.

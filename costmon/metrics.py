@@ -1,16 +1,17 @@
 """Pull per-workload requests and actual usage out of Prometheus.
 
-The join from pod -> Deployment is done here in Python rather than as a
-single nested PromQL query: kube-state-metrics only maps pod -> ReplicaSet
-(kube_pod_owner) and ReplicaSet -> Deployment (kube_replicaset_owner)
-separately, so attributing usage to a Deployment is a two-hop join either
-way. Doing it in Python keeps each PromQL query simple and keeps the join
-logic in one place that's easy to unit test later.
+The join from pod -> workload is done here in Python rather than as a
+single nested PromQL query: kube-state-metrics only maps one ownership hop
+per metric -- pod -> ReplicaSet/StatefulSet/DaemonSet/Job (kube_pod_owner),
+ReplicaSet -> Deployment (kube_replicaset_owner), Job -> CronJob
+(kube_job_owner) -- so attributing usage to a workload is a multi-hop join
+either way. Doing it in Python keeps each PromQL query simple and keeps the
+join logic in one place that's easy to unit test.
 
-The same join as a single query, checked against the demo cluster (plain
-rate() rather than the peak-aware statistics used below; it validates the
-join only). label_replace is needed because on(...) matches label names and
-both owner metrics call their target `owner_name`:
+The Deployment half of the join as a single query, checked against the demo
+cluster (plain rate() rather than the peak-aware statistics used below; it
+validates the join only). label_replace is needed because on(...) matches
+label names and both owner metrics call their target `owner_name`:
 
     sum by (deployment) (
       sum by (pod) (
@@ -57,15 +58,25 @@ class WorkloadMetrics:
     mem_usage_bytes: float
     # Values above are summed across this many pods; per-pod minimums scale by it.
     pods: int = 1
+    # Owner kind as Kubernetes names it: Deployment, StatefulSet, DaemonSet,
+    # CronJob, Job, or Pod for a pod with no owner.
+    kind: str = "Deployment"
 
 
-def _pod_to_deployment(base_url: str, namespace: str) -> dict[str, str]:
-    """pod name -> owning Deployment name, via ReplicaSet as the middle hop."""
-    pod_to_rs = {
-        m["metric"]["pod"]: m["metric"]["owner_name"]
+def _pod_to_workload(base_url: str, namespace: str) -> dict[str, tuple[str, str]]:
+    """Running pod name -> (kind, name) of the workload that owns it.
+
+    ReplicaSets resolve to their Deployment and Jobs to their CronJob when
+    they have one; anything else is attributed to its direct owner. Pods that
+    aren't Running are left out: kube-state-metrics still reports requests
+    for Pending, Failed and Evicted pods, which use nothing, so they would
+    otherwise count as pure waste.
+    """
+    running = {
+        m["metric"]["pod"]
         for m in instant_query(
             base_url,
-            f'kube_pod_owner{{namespace="{namespace}", owner_kind="ReplicaSet"}}',
+            f'kube_pod_status_phase{{namespace="{namespace}", phase="Running"}} == 1',
         )
     }
     rs_to_deploy = {
@@ -75,29 +86,58 @@ def _pod_to_deployment(base_url: str, namespace: str) -> dict[str, str]:
             f'kube_replicaset_owner{{namespace="{namespace}", owner_kind="Deployment"}}',
         )
     }
-    return {
-        pod: rs_to_deploy[rs]
-        for pod, rs in pod_to_rs.items()
-        if rs in rs_to_deploy
+    job_to_cronjob = {
+        m["metric"]["job_name"]: m["metric"]["owner_name"]
+        for m in instant_query(
+            base_url,
+            f'kube_job_owner{{namespace="{namespace}", owner_kind="CronJob"}}',
+        )
     }
 
+    owners: dict[str, tuple[str, str]] = {}
+    for m in instant_query(base_url, f'kube_pod_owner{{namespace="{namespace}"}}'):
+        # A pod with no owner has no owner labels at all on current
+        # kube-state-metrics, and "<none>" on older versions.
+        pod, kind, name = m["metric"]["pod"], m["metric"].get("owner_kind"), m["metric"].get("owner_name")
+        if pod not in running:
+            continue
+        if kind == "ReplicaSet" and name in rs_to_deploy:
+            kind, name = "Deployment", rs_to_deploy[name]
+        elif kind == "Job" and name in job_to_cronjob:
+            kind, name = "CronJob", job_to_cronjob[name]
+        elif kind in (None, "<none>"):
+            kind, name = "Pod", pod
+        owners[pod] = (kind, name)
+    return owners
 
-def _sum_by_deployment(rows: list[dict], pod_to_deployment: dict[str, str]) -> dict[str, float]:
-    """Sum a per-pod instant-query result into per-Deployment totals."""
-    totals: dict[str, float] = {}
+
+def _sum_by_workload(
+    rows: list[dict], pod_to_workload: dict[str, tuple[str, str]]
+) -> dict[tuple[str, str], float]:
+    """Sum a per-container instant-query result into per-workload totals.
+
+    Series are first collapsed to one per (pod, container), keeping the max.
+    A container that restarted inside the window, or one reported by two
+    kubelets, shows up as several series, and adding them double-counts.
+    """
+    per_container: dict[tuple[str, str], float] = {}
     for row in rows:
-        pod = row["metric"].get("pod")
-        deployment = pod_to_deployment.get(pod)
-        if deployment is None:
-            continue  # pod not owned by a Deployment we know about (or already gone)
-        totals[deployment] = totals.get(deployment, 0.0) + float(row["value"][1])
+        key = (row["metric"].get("pod"), row["metric"].get("container"))
+        per_container[key] = max(per_container.get(key, 0.0), float(row["value"][1]))
+
+    totals: dict[tuple[str, str], float] = {}
+    for (pod, _), value in per_container.items():
+        workload = pod_to_workload.get(pod)
+        if workload is None:
+            continue  # pod not running (or already gone)
+        totals[workload] = totals.get(workload, 0.0) + value
     return totals
 
 
 def pull_workload_metrics(
     base_url: str, namespace: str, usage_window: str = "15m"
 ) -> list[WorkloadMetrics]:
-    """Requests vs. actual usage over `usage_window`, aggregated per Deployment.
+    """Requests vs. actual usage over `usage_window`, aggregated per workload.
 
     Usage is a *peak-aware* statistic, not an average, because the numbers
     feed request recommendations: p95 of the CPU rate, and max working set
@@ -113,51 +153,52 @@ def pull_workload_metrics(
     each other (a 4m and a 15m window gave the same verdicts). It matters on
     real workloads, which have bursts and daily cycles.
     """
-    pod_to_deployment = _pod_to_deployment(base_url, namespace)
+    pod_to_workload = _pod_to_workload(base_url, namespace)
 
-    cpu_request = _sum_by_deployment(
+    cpu_request = _sum_by_workload(
         instant_query(
             base_url,
             f'kube_pod_container_resource_requests{{namespace="{namespace}", resource="cpu"}}',
         ),
-        pod_to_deployment,
+        pod_to_workload,
     )
-    mem_request = _sum_by_deployment(
+    mem_request = _sum_by_workload(
         instant_query(
             base_url,
             f'kube_pod_container_resource_requests{{namespace="{namespace}", resource="memory"}}',
         ),
-        pod_to_deployment,
+        pod_to_workload,
     )
-    cpu_usage = _sum_by_deployment(
+    cpu_usage = _sum_by_workload(
         instant_query(
             base_url,
-            f'sum by (pod) (quantile_over_time({CPU_QUANTILE}, '
+            f'quantile_over_time({CPU_QUANTILE}, '
             f'rate(container_cpu_usage_seconds_total'
             f'{{namespace="{namespace}", container!=""}}[{CPU_RATE_WINDOW}])'
-            f'[{usage_window}:{USAGE_STEP}]))',
+            f'[{usage_window}:{USAGE_STEP}])',
         ),
-        pod_to_deployment,
+        pod_to_workload,
     )
-    mem_usage = _sum_by_deployment(
+    mem_usage = _sum_by_workload(
         instant_query(
             base_url,
-            f'sum by (pod) (max_over_time(container_memory_working_set_bytes'
-            f'{{namespace="{namespace}", container!=""}}[{usage_window}]))',
+            f'max_over_time(container_memory_working_set_bytes'
+            f'{{namespace="{namespace}", container!=""}}[{usage_window}])',
         ),
-        pod_to_deployment,
+        pod_to_workload,
     )
 
-    pod_counts = Counter(pod_to_deployment.values())
+    pod_counts = Counter(pod_to_workload.values())
     return [
         WorkloadMetrics(
             namespace=namespace,
-            workload=d,
-            cpu_request_cores=cpu_request.get(d, 0.0),
-            cpu_usage_cores=cpu_usage.get(d, 0.0),
-            mem_request_bytes=mem_request.get(d, 0.0),
-            mem_usage_bytes=mem_usage.get(d, 0.0),
-            pods=pod_counts[d],
+            workload=name,
+            cpu_request_cores=cpu_request.get((kind, name), 0.0),
+            cpu_usage_cores=cpu_usage.get((kind, name), 0.0),
+            mem_request_bytes=mem_request.get((kind, name), 0.0),
+            mem_usage_bytes=mem_usage.get((kind, name), 0.0),
+            pods=pod_counts[(kind, name)],
+            kind=kind,
         )
-        for d in sorted(pod_counts)
+        for kind, name in sorted(pod_counts)
     ]

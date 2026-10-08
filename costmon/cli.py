@@ -29,6 +29,15 @@ def _pct(ratio: float | None) -> str:
     return "n/a" if ratio is None else f"{ratio:.0%}"
 
 
+def _name(c: WorkloadCost) -> str:
+    # kubectl-style, so a StatefulSet and a Deployment sharing a name stay apart.
+    return f"{c.kind.lower()}/{c.workload}"
+
+
+def _name_width(costs: list[WorkloadCost]) -> int:
+    return max((len(_name(c)) for c in costs), default=len("workload")) + 2
+
+
 def _bar(request: float, usage: float, scale: float) -> str:
     """One workload's request/usage bar, scaled against the fleet's largest.
 
@@ -48,9 +57,10 @@ def _bar(request: float, usage: float, scale: float) -> str:
 
 def render_deltas(costs: list[WorkloadCost]) -> str:
     lines = ["Request vs. usage  (\u2588 used  \u2591 idle headroom  \u2593 over request)"]
+    width = _name_width(costs)
     dimensions = (
-        ("CPU", [(c.workload, c.cpu_request_cores, c.cpu_usage_cores) for c in costs], _millicores),
-        ("Memory", [(c.workload, c.mem_request_bytes, c.mem_usage_bytes) for c in costs], _mib),
+        ("CPU", [(_name(c), c.cpu_request_cores, c.cpu_usage_cores) for c in costs], _millicores),
+        ("Memory", [(_name(c), c.mem_request_bytes, c.mem_usage_bytes) for c in costs], _mib),
     )
     for label, rows, fmt in dimensions:
         scale = max((max(req, use) for _, req, use in rows), default=0.0)
@@ -58,23 +68,24 @@ def render_deltas(costs: list[WorkloadCost]) -> str:
         lines.append(f"  {label}")
         for name, req, use in rows:
             lines.append(
-                f"    {name:<26}{_bar(req, use, scale):<{BAR_WIDTH}}"
+                f"    {name:<{width}}{_bar(req, use, scale):<{BAR_WIDTH}}"
                 f"{fmt(req):>8} req{fmt(use):>9} used"
             )
     return "\n".join(lines)
 
 
 def render(costs: list[WorkloadCost], threshold: float, chart: bool = True) -> str:
-    lines = [f"{'workload':<26}{'cpu eff':>9}{'mem eff':>9}{'$/mo cost':>12}{'$/mo waste':>12}"]
+    width = _name_width(costs)
+    lines = [f"{'workload':<{width}}{'cpu eff':>9}{'mem eff':>9}{'$/mo cost':>12}{'$/mo waste':>12}"]
     for c in costs:
         lines.append(
-            f"{c.workload:<26}{_pct(c.cpu_efficiency):>9}{_pct(c.mem_efficiency):>9}"
+            f"{_name(c):<{width}}{_pct(c.cpu_efficiency):>9}{_pct(c.mem_efficiency):>9}"
             f"{c.monthly_cost_usd:>12.2f}{c.monthly_waste_usd:>12.2f}"
         )
 
     total_cost = sum(c.monthly_cost_usd for c in costs)
     total_waste = sum(c.monthly_waste_usd for c in costs)
-    lines.append(f"{'TOTAL':<26}{'':>9}{'':>9}{total_cost:>12.2f}{total_waste:>12.2f}")
+    lines.append(f"{'TOTAL':<{width}}{'':>9}{'':>9}{total_cost:>12.2f}{total_waste:>12.2f}")
 
     if chart:
         lines.append("")
@@ -92,7 +103,7 @@ def render(costs: list[WorkloadCost], threshold: float, chart: bool = True) -> s
             f"(efficiency < {threshold:.0%}, {RECOMMENDATION_HEADROOM}x headroom):"
         )
         for c in flagged:
-            # Everything upstream is a Deployment total; requests are set per pod.
+            # Everything upstream is a workload total; requests are set per pod.
             cpu = (
                 f"cpu {_millicores(c.cpu_request_cores / c.pods)} -> "
                 f"{_millicores(c.recommended_cpu_request_cores / c.pods)}"
@@ -106,7 +117,7 @@ def render(costs: list[WorkloadCost], threshold: float, chart: bool = True) -> s
                 else "mem ok"
             )
             pods = f"({c.pods} pod{'s' if c.pods != 1 else ''})"
-            lines.append(f"  {c.workload:<26}{pods:<11}{cpu:<24}{mem}")
+            lines.append(f"  {_name(c):<{width}}{pods:<11}{cpu:<24}{mem}")
 
     return "\n".join(lines)
 
@@ -153,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not metrics:
         print(
-            f"error: no Deployments found in namespace {args.namespace!r}",
+            f"error: no running workloads found in namespace {args.namespace!r}",
             file=sys.stderr,
         )
         return 1

@@ -74,7 +74,7 @@ TOOLS = (
     (
         "list_workloads",
         "Live per-workload resource requests vs. actual usage for a namespace, summed "
-        "across each Deployment's pods. Use for utilization questions.",
+        "across each workload's running pods. Use for utilization questions.",
         False,
     ),
     (
@@ -126,10 +126,11 @@ class CostmonServer:
             "namespace": self._default(args, "namespace"),
             "window": self._default(args, "window"),
             "workload_count": len(metrics),
-            "note": "Values are summed across all pods of each Deployment.",
+            "note": "Values are summed across all running pods of each workload.",
             "workloads": [
                 {
                     "workload": m.workload,
+                    "kind": m.kind,
                     "cpu_request_cores": round(m.cpu_request_cores, 4),
                     "cpu_usage_cores": round(m.cpu_usage_cores, 4),
                     "mem_request_mib": round(m.mem_request_bytes / MIB, 1),
@@ -158,6 +159,7 @@ class CostmonServer:
             "workloads": [
                 {
                     "workload": c.workload,
+                    "kind": c.kind,
                     "cpu_efficiency": _round_or_none(c.cpu_efficiency),
                     "mem_efficiency": _round_or_none(c.mem_efficiency),
                     "cpu_overprovisioned": c.cpu_overprovisioned,
@@ -178,6 +180,7 @@ class CostmonServer:
                 continue
             entry: dict[str, Any] = {
                 "workload": c.workload,
+                "kind": c.kind,
                 "pods": c.pods,
                 "monthly_waste_usd": round(c.monthly_waste_usd, 2),
             }

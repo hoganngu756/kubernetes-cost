@@ -2,7 +2,7 @@
 
 Finds Kubernetes workloads that request more CPU and memory than they use, and
 estimates what that costs per month. It reads usage and requests from
-Prometheus, compares them per Deployment, and suggests smaller requests. It
+Prometheus, compares them per workload, and suggests smaller requests. It
 runs as a CLI report or as an MCP server for LLM agents.
 
 Pure Python standard library, no dependencies.
@@ -51,34 +51,41 @@ costmon [--prometheus-url URL] [--namespace NS] [--window 15m]
 | `--threshold` | `0.4` | Flag an axis when usage / request is below this |
 | `--chart` / `--no-chart` | on | Request-vs-usage bar chart |
 
-Example against the demo fleet (chart omitted):
+Live output from the demo fleet, 15m window (chart omitted):
 
 ```
-workload                    cpu eff  mem eff   $/mo cost  $/mo waste
-idle-hog                         0%       0%       25.84       25.29
-overprovisioned-web             33%      13%       12.15        7.08
-underprovisioned-cruncher      400%      27%        1.33        0.13
-api-gateway                     75%      64%       16.11        0.00
+workload                                cpu eff  mem eff   $/mo cost  $/mo waste
+deployment/idle-hog                          0%       0%       25.84       25.29
+deployment/overprovisioned-web              32%      15%       12.15        7.20
+deployment/underprovisioned-cruncher       400%      26%        1.33        0.13
+deployment/api-gateway                      76%      70%       16.11        0.00
 ...
-TOTAL                                             112.38       32.50
+TOTAL                                                         112.38       32.62
 
 Over-provisioned: 3 of 10 workloads (30%)
 Recommended request changes per pod (efficiency < 40%, 1.3x headroom):
-  idle-hog                  (2 pods)   cpu 500m -> 10m         mem 512Mi -> 16Mi
-  overprovisioned-web       (1 pod)    cpu 500m -> 217m        mem 256Mi -> 43Mi
-  underprovisioned-cruncher (1 pod)    cpu ok                  mem 64Mi -> 22Mi
+  deployment/idle-hog                   (2 pods)   cpu 500m -> 10m         mem 512Mi -> 16Mi
+  deployment/overprovisioned-web        (1 pod)    cpu 500m -> 211m        mem 256Mi -> 51Mi
+  deployment/underprovisioned-cruncher  (1 pod)    cpu ok                  mem 64Mi -> 21Mi
 ```
 
-Cost and waste are Deployment totals. Recommendations are per pod, so they can
+Cost and waste are workload totals. Recommendations are per pod, so they can
 be copied into the manifest. For a pod with several containers, split the
 value across them.
 
 ## How it works
 
 **Usage.** CPU is the p95 of the per-container CPU rate over the window. Memory
-is the peak working set over the window. Both are summed per Deployment. A
+is the peak working set over the window. Both are taken per container
+(collapsing duplicate series, e.g. from a restart, to their max) and summed
+per workload. A
 peak-aware number is used instead of an average because an average-based
 request would be exceeded half the time.
+
+**Workloads.** Each running pod is attributed to its owner: a Deployment
+(through its ReplicaSet), StatefulSet, DaemonSet, CronJob (through its Job),
+standalone Job, or the pod itself if it has no owner. Pods that aren't
+Running (Pending, Failed, Evicted) are skipped, since they reserve nothing.
 
 **Efficiency.** `usage / request`, calculated separately for CPU and memory.
 A workload can be flagged on one axis and not the other.
@@ -103,8 +110,6 @@ A workload above the threshold shows $0 waste even if it has some slack.
 
 **Limitations**
 
-- Only pods owned by a Deployment are counted. StatefulSets, DaemonSets, Jobs
-  and bare pods are skipped.
 - One namespace at a time.
 - Pricing is a fixed snapshot, not per node type or region.
 - No auth support for Prometheus.
@@ -149,7 +154,7 @@ the venv activated.
 
 | Tool | Returns |
 |---|---|
-| `list_workloads` | Requests and usage per Deployment |
+| `list_workloads` | Requests and usage per workload |
 | `get_cost_report` | Efficiency, monthly cost and waste per workload, ranked by waste, with totals |
 | `get_rightsizing_recommendations` | Current vs. recommended requests per pod for flagged workloads |
 
@@ -167,7 +172,7 @@ rejects a query, the tool call returns an error and the server keeps running.
 cluster/                kind and kube-prometheus-stack config (versions pinned)
 workloads/              demo Deployments
 costmon/prometheus.py   Prometheus HTTP client
-costmon/metrics.py      PromQL queries, pod -> Deployment join
+costmon/metrics.py      PromQL queries, pod -> workload join
 costmon/pricing.py      rates
 costmon/cost.py         efficiency, recommendations, waste
 costmon/cli.py          report
