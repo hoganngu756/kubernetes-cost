@@ -37,6 +37,9 @@ class WorkloadCost:
     cpu_usage_cores: float
     mem_request_bytes: float
     mem_usage_bytes: float
+    # The values above and the recommendations below are summed across this
+    # many pods; divide by it for the per-pod request someone would set.
+    pods: int
     cpu_efficiency: float | None
     mem_efficiency: float | None
     cpu_overprovisioned: bool
@@ -99,6 +102,7 @@ def evaluate(m: WorkloadMetrics, threshold: float = EFFICIENCY_THRESHOLD) -> Wor
         cpu_usage_cores=m.cpu_usage_cores,
         mem_request_bytes=m.mem_request_bytes,
         mem_usage_bytes=m.mem_usage_bytes,
+        pods=m.pods,
         cpu_efficiency=cpu_efficiency,
         mem_efficiency=mem_efficiency,
         cpu_overprovisioned=cpu_over,

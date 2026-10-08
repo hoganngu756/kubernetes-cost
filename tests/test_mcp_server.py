@@ -207,7 +207,30 @@ class ToolTests(unittest.TestCase):
         self.assertNotIn("worker", by_name)  # honest workload gets no recommendation
         # cruncher needs MORE cpu, so no cpu key at all -- only memory is cut.
         self.assertNotIn("cpu", by_name["cruncher"])
-        self.assertAlmostEqual(by_name["cruncher"]["memory"]["recommended_request_mib"], 20.8)
+        self.assertAlmostEqual(
+            by_name["cruncher"]["memory"]["recommended_request_mib_per_pod"], 20.8
+        )
+
+    def test_recommendations_are_per_pod_not_deployment_totals(self):
+        two_pods = [WorkloadMetrics("cost-demo", "idle-hog", 1.0, 0.0, 1024 * MIB, 0.0, pods=2)]
+        with mock.patch("costmon.mcp_server.pull_workload_metrics", return_value=two_pods):
+            (response,) = drive(
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": "get_rightsizing_recommendations", "arguments": {}},
+                    }
+                ]
+            )
+        (rec,) = response["result"]["structuredContent"]["recommendations"]
+
+        self.assertEqual(rec["pods"], 2)
+        self.assertEqual(rec["cpu"]["current_request_cores_per_pod"], 0.5)
+        self.assertEqual(rec["cpu"]["recommended_request_cores_per_pod"], 0.01)
+        self.assertEqual(rec["memory"]["current_request_mib_per_pod"], 512.0)
+        self.assertEqual(rec["memory"]["recommended_request_mib_per_pod"], 16.0)
 
     def test_threshold_argument_changes_what_is_flagged(self):
         strict = call("get_cost_report", {"threshold": 0.8})["structuredContent"]

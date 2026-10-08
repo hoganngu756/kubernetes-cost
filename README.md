@@ -63,15 +63,15 @@ api-gateway                     75%      64%       16.11        0.00
 TOTAL                                             112.38       32.50
 
 Over-provisioned: 3 of 10 workloads (30%)
-Recommended request changes (efficiency < 40%, 1.3x headroom):
-  idle-hog                  cpu 1000m -> 20m          mem 1024Mi -> 32Mi
-  overprovisioned-web       cpu 500m -> 217m          mem 256Mi -> 43Mi
-  underprovisioned-cruncher cpu ok                    mem 64Mi -> 22Mi
+Recommended request changes per pod (efficiency < 40%, 1.3x headroom):
+  idle-hog                  (2 pods)   cpu 500m -> 10m         mem 512Mi -> 16Mi
+  overprovisioned-web       (1 pod)    cpu 500m -> 217m        mem 256Mi -> 43Mi
+  underprovisioned-cruncher (1 pod)    cpu ok                  mem 64Mi -> 22Mi
 ```
 
-Requests and recommendations are totals across all of a Deployment's pods.
-Divide by the replica count to get the per-container value (`idle-hog` has 2
-replicas, so 20m means 10m each).
+Cost and waste are Deployment totals. Recommendations are per pod, so they can
+be copied into the manifest. For a pod with several containers, split the
+value across them.
 
 ## How it works
 
@@ -151,7 +151,7 @@ the venv activated.
 |---|---|
 | `list_workloads` | Requests and usage per Deployment |
 | `get_cost_report` | Efficiency, monthly cost and waste per workload, ranked by waste, with totals |
-| `get_rightsizing_recommendations` | Current vs. recommended requests for flagged workloads |
+| `get_rightsizing_recommendations` | Current vs. recommended requests per pod for flagged workloads |
 
 All arguments (`namespace`, `window`, `threshold`, `prometheus_url`) are
 optional. Server-wide defaults can be set with the same flags as the CLI

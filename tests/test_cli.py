@@ -48,6 +48,18 @@ class RenderTests(unittest.TestCase):
         self.assertIn("cpu ok", rec)  # never recommend cutting an under-provisioned axis
         self.assertIn("mem 64Mi -> 21Mi", rec)  # 16 * 1.3 = 20.8
 
+    def test_recommendations_are_per_pod_not_deployment_totals(self):
+        # Requests are set per pod, so a total would not be copy-pasteable.
+        # Inputs are Deployment totals across 2 pods: 1000m / 1024Mi requested.
+        metrics = [
+            WorkloadMetrics("cost-demo", "idle-hog", 1.0, 0.0, 1024 * MIB, 0.0, pods=2),
+        ]
+        rec = _recommendations(_report(metrics))
+
+        self.assertIn("(2 pods)", rec)
+        self.assertIn("cpu 500m -> 10m", rec)  # floor: 10m per pod
+        self.assertIn("mem 512Mi -> 16Mi", rec)  # floor: 16Mi per pod
+
     def test_flagged_share_is_reported(self):
         # The headline number: how much of the fleet is over-provisioned.
         metrics = [

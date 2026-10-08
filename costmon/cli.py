@@ -88,22 +88,25 @@ def render(costs: list[WorkloadCost], threshold: float, chart: bool = True) -> s
             f"({len(flagged) / len(costs):.0%})"
         )
         lines.append(
-            f"Recommended request changes "
+            f"Recommended request changes per pod "
             f"(efficiency < {threshold:.0%}, {RECOMMENDATION_HEADROOM}x headroom):"
         )
         for c in flagged:
+            # Everything upstream is a Deployment total; requests are set per pod.
             cpu = (
-                f"cpu {_millicores(c.cpu_request_cores)} -> "
-                f"{_millicores(c.recommended_cpu_request_cores)}"
+                f"cpu {_millicores(c.cpu_request_cores / c.pods)} -> "
+                f"{_millicores(c.recommended_cpu_request_cores / c.pods)}"
                 if c.cpu_overprovisioned
                 else "cpu ok"
             )
             mem = (
-                f"mem {_mib(c.mem_request_bytes)} -> {_mib(c.recommended_mem_request_bytes)}"
+                f"mem {_mib(c.mem_request_bytes / c.pods)} -> "
+                f"{_mib(c.recommended_mem_request_bytes / c.pods)}"
                 if c.mem_overprovisioned
                 else "mem ok"
             )
-            lines.append(f"  {c.workload:<26}{cpu:<26}{mem}")
+            pods = f"({c.pods} pod{'s' if c.pods != 1 else ''})"
+            lines.append(f"  {c.workload:<26}{pods:<11}{cpu:<24}{mem}")
 
     return "\n".join(lines)
 

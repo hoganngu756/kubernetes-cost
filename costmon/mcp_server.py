@@ -87,7 +87,7 @@ TOOLS = (
     (
         "get_rightsizing_recommendations",
         "Concrete request changes for over-provisioned workloads only: current vs. "
-        "recommended CPU/memory requests. Use to answer 'what should I change?'.",
+        "recommended CPU/memory requests per pod. Use to answer 'what should I change?'.",
         True,
     ),
 )
@@ -178,19 +178,24 @@ class CostmonServer:
                 continue
             entry: dict[str, Any] = {
                 "workload": c.workload,
+                "pods": c.pods,
                 "monthly_waste_usd": round(c.monthly_waste_usd, 2),
             }
             # An axis is present only if it is safe to cut. Omitting it is the
             # point: a workload can be over on memory and under on CPU at once.
             if c.cpu_overprovisioned:
                 entry["cpu"] = {
-                    "current_request_cores": round(c.cpu_request_cores, 4),
-                    "recommended_request_cores": round(c.recommended_cpu_request_cores, 4),
+                    "current_request_cores_per_pod": round(c.cpu_request_cores / c.pods, 4),
+                    "recommended_request_cores_per_pod": round(
+                        c.recommended_cpu_request_cores / c.pods, 4
+                    ),
                 }
             if c.mem_overprovisioned:
                 entry["memory"] = {
-                    "current_request_mib": round(c.mem_request_bytes / MIB, 1),
-                    "recommended_request_mib": round(c.recommended_mem_request_bytes / MIB, 1),
+                    "current_request_mib_per_pod": round(c.mem_request_bytes / c.pods / MIB, 1),
+                    "recommended_request_mib_per_pod": round(
+                        c.recommended_mem_request_bytes / c.pods / MIB, 1
+                    ),
                 }
             recommendations.append(entry)
         return {
