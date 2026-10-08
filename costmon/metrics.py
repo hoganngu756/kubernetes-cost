@@ -5,8 +5,28 @@ single nested PromQL query: kube-state-metrics only maps pod -> ReplicaSet
 (kube_pod_owner) and ReplicaSet -> Deployment (kube_replicaset_owner)
 separately, so attributing usage to a Deployment is a two-hop join either
 way. Doing it in Python keeps each PromQL query simple and keeps the join
-logic in one place that's easy to unit test later (see README for the
-equivalent single PromQL query, validated against the live cluster).
+logic in one place that's easy to unit test later.
+
+The same join as a single query, checked against the demo cluster (plain
+rate() rather than the peak-aware statistics used below; it validates the
+join only). label_replace is needed because on(...) matches label names and
+both owner metrics call their target `owner_name`:
+
+    sum by (deployment) (
+      sum by (pod) (
+        rate(container_cpu_usage_seconds_total{namespace="cost-demo",container!=""}[5m])
+      )
+      * on (pod) group_left(replicaset)
+        label_replace(
+          kube_pod_owner{namespace="cost-demo", owner_kind="ReplicaSet"},
+          "replicaset", "$1", "owner_name", "(.*)"
+        )
+      * on (replicaset) group_left(deployment)
+        label_replace(
+          kube_replicaset_owner{namespace="cost-demo", owner_kind="Deployment"},
+          "deployment", "$1", "owner_name", "(.*)"
+        )
+    )
 """
 from collections import Counter
 from dataclasses import dataclass
@@ -88,8 +108,10 @@ def pull_workload_metrics(
     requests are summed: a request is set per container, so that's the unit a
     recommendation applies to.
 
-    See the README caveat on why a percentile is near-meaningless on this
-    particular cluster (synthetic, flat load) while still being the right math.
+    On the demo cluster the percentile changes nothing visible: the workloads
+    run a fixed duty cycle, so p95, mean and max land within a few points of
+    each other (a 4m and a 15m window gave the same verdicts). It matters on
+    real workloads, which have bursts and daily cycles.
     """
     pod_to_deployment = _pod_to_deployment(base_url, namespace)
 

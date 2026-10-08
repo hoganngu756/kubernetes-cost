@@ -8,8 +8,9 @@ CPU/RAM ratio:
     CPU: $0.192 * 0.65 / 4 vCPU  = $0.0312 per vCPU-hr
     Mem: $0.192 * 0.35 / 16 GiB  = $0.0042 per GiB-hr
 so a full node (4 * 0.0312 + 16 * 0.0042) prices back to exactly $0.192/hr.
-A single blended rate (rather than per-instance-type pricing) is the right
-amount of precision for this project -- see README for why.
+A single blended rate rather than per-instance-type pricing: the kind nodes
+aren't real instances (their instance-type label is made up), so there is no
+real instance price to look up.
 """
 
 CPU_HOURLY_RATE_PER_CORE = 0.0312  # USD per vCPU-hour
